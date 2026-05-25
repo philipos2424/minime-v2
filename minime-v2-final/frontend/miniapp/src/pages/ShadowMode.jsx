@@ -1,0 +1,1 @@
+export default function ShadowMode() { return <div>Shadow Mode Dashboard</div>; }
