@@ -85,25 +85,27 @@ async function startServer() {
         await botManager.initialize();
         app.locals.botManager = botManager;
 
-        if (IS_PRODUCTION && config.WEB_URL && config.WEB_URL !== 'https://minime.app') {
-            // Production: webhook mode
-            await registerWebhooks(config);
-            console.log('🔗 Webhook mode active');
-        } else {
-            // Dev: polling mode
-            await botManager.launchPolling();
-        }
+        // Start HTTP server first (Railway needs it immediately for health checks)
+        const server = app.listen(PORT, async () => {
+            console.log(`🪞 MiniMe running on port ${PORT}`);
+            console.log(`🔐 Env: ${config.NODE_ENV}`);
+            console.log(`🤖 Bots: ${botManager.getBotCount()} active`);
+
+            if (IS_PRODUCTION && config.WEB_URL && config.WEB_URL !== 'https://minime.app') {
+                // Production: webhook mode — Telegram sends updates to us
+                await registerWebhooks(config);
+                console.log('🔗 Webhook mode active');
+            } else {
+                // Dev: polling mode
+                botManager.launchPolling().catch(console.error);
+                console.log('🔄 Polling mode active');
+            }
+        });
 
         // Cron jobs
         cron.schedule('*/5 * * * *', () => HealthCheckJob.run(supabase, botManager, auditService));
         cron.schedule('0 9 * * 1', () => PriceReminderJob.run(supabase, botManager));
         cron.schedule('0 0 * * *', () => AnalyticsJob.run(supabase));
-
-        const server = app.listen(PORT, () => {
-            console.log(`🪞 MiniMe running on port ${PORT}`);
-            console.log(`🔐 Env: ${config.NODE_ENV}`);
-            console.log(`🤖 Bots: ${botManager.getBotCount()} active`);
-        });
 
         const shutdown = async (signal) => {
             console.log(`🛑 ${signal} — shutting down`);
