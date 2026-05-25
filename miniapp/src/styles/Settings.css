@@ -1,0 +1,97 @@
+.settings {
+  padding-bottom: 24px;
+}
+
+.settings-section {
+  background: white;
+  border-radius: var(--radius-lg);
+  padding: 16px;
+  margin-bottom: 16px;
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--gray-light);
+}
+
+.settings-section h2 {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--charcoal);
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-section h2 svg {
+  color: var(--terracotta);
+}
+
+.setting-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--gray-light);
+}
+
+.setting-item:last-child {
+  border-bottom: none;
+}
+
+.setting-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.setting-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--charcoal);
+}
+
+.setting-desc {
+  font-size: 12px;
+  color: var(--gray);
+}
+
+.setting-item select {
+  padding: 8px 12px;
+  border: 1px solid var(--gray-light);
+  border-radius: var(--radius-md);
+  font-size: 14px;
+  background: white;
+  color: var(--charcoal);
+  min-width: 140px;
+}
+
+.hours-input {
+  width: 100px;
+  padding: 8px 12px;
+  border: 1px solid var(--gray-light);
+  border-radius: var(--radius-md);
+  font-size: 14px;
+  text-align: center;
+}
+
+.save-btn {
+  width: calc(100% - 32px);
+  margin: 0 16px;
+  padding: 14px;
+  background: var(--terracotta);
+  color: white;
+  border: none;
+  border-radius: var(--radius-md);
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.save-btn:hover {
+  background: var(--terracotta-dark);
+}
+
+.save-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
