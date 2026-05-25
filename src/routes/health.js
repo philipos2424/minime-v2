@@ -2,13 +2,14 @@ const express = require('express');
 const router = express.Router();
 
 router.get('/', async (req, res) => {
-    const { supabase, botManager } = req.context;
+    const { supabase, config } = req.context;
+    const botManager = req.app.locals.botManager;
 
     try {
         // Check database
-        const { data: dbCheck, error: dbError } = await supabase
+        const { error: dbError } = await supabase
             .from('businesses')
-            .select('count')
+            .select('id')
             .limit(1);
 
         const dbHealthy = !dbError;
@@ -17,9 +18,9 @@ router.get('/', async (req, res) => {
         const botCount = botManager ? botManager.getBotCount() : 0;
 
         // Check OpenAI
-        const openAIHealthy = !!req.context.config.OPENAI_API_KEY;
+        const openAIHealthy = !!config.OPENAI_API_KEY;
 
-        const healthy = dbHealthy && botCount > 0 && openAIHealthy;
+        const healthy = dbHealthy && openAIHealthy;
 
         res.status(healthy ? 200 : 503).json({
             status: healthy ? 'healthy' : 'degraded',
@@ -44,7 +45,8 @@ router.get('/', async (req, res) => {
 });
 
 router.get('/detailed', async (req, res) => {
-    const { supabase, botManager, auditService } = req.context;
+    const { supabase, auditService } = req.context;
+    const botManager = req.app.locals.botManager;
 
     try {
         // Get system stats
