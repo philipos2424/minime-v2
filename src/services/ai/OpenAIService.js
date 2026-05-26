@@ -81,30 +81,31 @@ Return EXACTLY this JSON structure:
         }
     }
 
-    async generateConsultantReply(business, products, customerMessage, state, analysis) {
+    async generateConsultantReply(business, products, customerMessage, state, analysis, history = []) {
         const systemPrompt = this.buildConsultantPrompt(business, products, state, analysis);
 
         const model = analysis.language === 'am' ? this.models.smart : this.models.fast;
 
         try {
-            const messages = [
-                { role: 'system', content: systemPrompt },
-                { role: 'user', content: customerMessage }
-            ];
+            const messages = [{ role: 'system', content: systemPrompt }];
 
-            // Add conversation history if available
-            if (state?.session_count > 1) {
-                messages.unshift({
-                    role: 'system',
-                    content: `Previous context: This customer has chatted ${state.session_count} times. Previous preferences: ${JSON.stringify(state.preferences || {})}`
-                });
+            // Include recent conversation history (alternating user/assistant)
+            for (const turn of history) {
+                if (turn.customer_message) {
+                    messages.push({ role: 'user', content: turn.customer_message.slice(0, 500) });
+                }
+                if (turn.bot_reply) {
+                    messages.push({ role: 'assistant', content: turn.bot_reply.slice(0, 500) });
+                }
             }
+
+            messages.push({ role: 'user', content: customerMessage });
 
             const response = await this.client.chat.completions.create({
                 model,
                 messages,
                 temperature: 0.8,
-                max_tokens: 500,
+                max_tokens: 400,
                 presence_penalty: 0.3,
                 frequency_penalty: 0.2
             });
@@ -203,51 +204,88 @@ Return:
     }
 
     buildConsultantPrompt(business, products, state, analysis) {
-        const inventory = products.map(p => {
-            const specs = Object.entries(p.specs || {})
-                .map(([k, v]) => `${k}: ${v}`)
-                .join(', ');
-            return `- ${p.name}: ${p.price} ETB${p.condition ? ` (${p.condition})` : ''}${specs ? ` | ${specs}` : ''}`;
-        }).join('\n');
+        const assistantName = business.assistant_name || 'MiniMe';
+        const tone = business.tone || 'warm';
+        const langPref = business.language_preference || analysis.language || 'mixed';
 
-        const customerContext = state ? `
-CUSTOMER CONTEXT:
-- Previous visits: ${state.session_count || 1}
-- Budget: ${state.budget_min ? `${state.budget_min}-${state.budget_max} ETB` : 'Unknown'}
-- Purpose: ${state.purpose || 'Unknown'}
-- Preferences: ${JSON.stringify(state.preferences || {})}
-- Stage: ${state.stage || 'greeting'}
+        // Inventory
+        const inventory = products.length ? products.map(p => {
+            const specs = Object.entries(p.specs || {}).map(([k, v]) => `${k}: ${v}`).join(', ');
+            return `• ${p.name}: ${p.price} ETB${specs ? ` (${specs})` : ''}`;
+        }).join('\n') : '(no products added yet)';
+
+        // Voice profile from sample_replies — study the owner's actual style
+        const samples = Array.isArray(business.sample_replies) ? business.sample_replies.slice(0, 6) : [];
+        const voiceBlock = samples.length ? `
+VOICE & STYLE — study these real examples from the owner and match this style:
+${samples.map((s, i) => {
+    if (typeof s === 'string') return `Example ${i + 1}: "${s}"`;
+    if (s.question && s.answer) return `Q: ${s.question}\nA: ${s.answer}`;
+    return `Example ${i + 1}: "${s.reply || s.text || JSON.stringify(s)}"`;
+}).join('\n\n')}
 ` : '';
 
-        return `You are ${business.business_name}'s best sales assistant. You sell ${business.category} in ${business.sub_city || 'Addis Ababa'}.
+        // Owner rules (instructions that aren't FAQ)
+        const allInstructions = Array.isArray(business.owner_instructions) ? business.owner_instructions : [];
+        const rules = allInstructions.filter(r => r.source !== 'faq');
+        const faqs = allInstructions.filter(r => r.source === 'faq');
 
-YOUR INVENTORY:
+        const rulesBlock = rules.length ? `
+OWNER'S RULES — ALWAYS FOLLOW (these override anything else):
+${rules.map((r, i) => `${i + 1}. ${r.content || r.rule || r.text || r}`).join('\n')}
+` : '';
+
+        const faqBlock = faqs.length ? `
+FAQ — USE THESE EXACT ANSWERS when customer asks:
+${faqs.map(f => `Q: ${f.question || f.trigger}\nA: ${f.answer || f.reply || f.content}`).join('\n\n')}
+` : '';
+
+        // Customer context
+        const customerContext = state ? `
+CUSTOMER CONTEXT:
+- Sessions: ${state.session_count || 1}
+- Budget: ${state.budget_min ? `${state.budget_min}-${state.budget_max} ETB` : 'unknown'}
+- Purpose: ${state.purpose || 'unknown'}
+- Stage: ${state.stage || 'greeting'}
+- Preferences: ${JSON.stringify(state.preferences || {})}` : '';
+
+        const languageInstruction =
+            langPref === 'am' ? 'Reply in Amharic.' :
+            langPref === 'en' ? 'Reply in English.' :
+            'Use natural Amharic-English mix (Ethiopian code-switching) — match the customer\'s language.';
+
+        const toneInstruction =
+            tone === 'direct' ? 'Be direct, brief, no fluff. Just facts and answers.' :
+            tone === 'professional' ? 'Be polite, formal, professional.' :
+            'Be warm, friendly, like an Ethiopian shopkeeper who knows the customer.';
+
+        return `You are ${assistantName} — ${business.business_name || 'this business'}'s AI sales assistant.
+${business.description ? business.description : ''}
+Category: ${business.category || 'general'}. Location: ${business.location || business.sub_city || 'Addis Ababa'}.
+
+${voiceBlock}${rulesBlock}${faqBlock}
+
+YOUR PRODUCTS:
 ${inventory}
 
-BUSINESS RULES:
-${JSON.stringify(business.rules || {}, null, 2)}
-
-LOCATION: ${business.location || 'Addis Ababa'}
-HOURS: ${JSON.stringify(business.rules?.business_hours || {})}
-PAYMENT: ${(business.rules?.payment_methods || ['cash']).join(', ')}
-
+HOURS: ${JSON.stringify(business.rules?.business_hours || 'Mon-Sat 9-6')}
+PAYMENT: ${(business.rules?.payment_methods || ['cash', 'telebirr']).join(', ')}
 ${customerContext}
 
-LANGUAGE: ${analysis.language === 'mixed' ? 'Use natural Amharic-English mix (common in Ethiopia)' : analysis.language === 'am' ? 'Reply in Amharic' : 'Reply in English'}
+LANGUAGE: ${languageInstruction}
+TONE: ${toneInstruction}
 
-STYLE RULES:
-1. Warm, professional, Ethiopian shopkeeper energy
-2. Ask 1-2 questions before recommending (unless you have enough info)
-3. Recommend 2-3 specific items with clear WHY
-4. Keep under 3 sentences per message
-5. Always mention warranty and pickup location
-6. Never promise what you don't have
-7. End with next step (question, button, or action)
-8. For mixed language: Natural code-switching, not formal translation
+ABSOLUTE RULES:
+1. Never invent prices, products, specs, or stock that aren't in YOUR PRODUCTS above
+2. Keep replies to 1-3 sentences — Telegram chat style
+3. End with a question OR concrete next step (price, location, button, reservation)
+4. If you don't know something specific (delivery time, exact spec, etc.), say "let me check with the owner"
+5. Refer to yourself as "${assistantName}" if introducing yourself
+6. NEVER say "I'm an AI" — you're a sales assistant working for the business
+7. If FAQ matches the question, use that answer verbatim
 
-CURRENT STAGE: ${state?.stage || 'greeting'}
-${state?.stage === 'recommending' ? '\nYou have enough info. Make specific recommendation now.' : ''}
-${analysis.needs_escalation ? '\nThis needs owner attention. Apologize and say you will connect them.' : ''}`;
+${state?.stage === 'recommending' ? 'You have enough context. Recommend 1-3 specific products with clear reasoning.' : ''}
+${analysis.needs_escalation ? 'This is sensitive — apologize and say the owner will reply personally.' : ''}`;
     }
 
     getDefaultAnalysis() {

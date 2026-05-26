@@ -3,6 +3,7 @@ const { message } = require('telegraf/filters');
 const CustomerHandler = require('../../handlers/CustomerHandler');
 const SearchHandler = require('../../handlers/SearchHandler');
 const OpenAIService = require('../ai/OpenAIService');
+const botInstance = require('./_botInstance');
 
 class BotManager {
     constructor(supabase, encryptionService, config) {
@@ -16,6 +17,7 @@ class BotManager {
         // Critical on Vercel: prevents race condition where a request hits before init.
         this.mainBot = new Telegraf(config.TELEGRAM_BOT_TOKEN);
         this.setupMainBotHandlers(this.mainBot);
+        botInstance.set(this.mainBot); // expose to handlers
 
         if (config.SEARCH_BOT_TOKEN) {
             this.searchBot = new Telegraf(config.SEARCH_BOT_TOKEN);
@@ -62,6 +64,13 @@ class BotManager {
         bot.command('sales', ctx => this.ownerSales(ctx));
         bot.command('customers', ctx => this.ownerCustomers(ctx));
         bot.command('settings', ctx => this.ownerSettings(ctx));
+        // Persona & learning commands
+        bot.command('name', ctx => this.cmdSetName(ctx));
+        bot.command('tone', ctx => this.cmdSetTone(ctx));
+        bot.command('lang', ctx => this.cmdSetLanguage(ctx));
+        bot.command('rule', ctx => this.cmdAddRule(ctx));
+        bot.command('rules', ctx => this.cmdListRules(ctx));
+        bot.command('shadow', ctx => this.cmdToggleShadow(ctx));
         bot.on(message('photo'), ctx => this.handleOwnerUpload(ctx));
         bot.on(message('document'), ctx => this.handleOwnerUpload(ctx));
         bot.on(message('voice'), ctx => this.handleOwnerUpload(ctx));
@@ -261,11 +270,35 @@ class BotManager {
     }
 
     async ownerTeach(ctx) {
+        const business = await this.getOwnerBusiness(ctx.from.id);
+        if (!business) return ctx.reply('Please /start first.');
+
+        // /teach <text>  → save inline knowledge
+        const inline = ctx.message.text.replace(/^\/teach(@\S+)?\s*/, '').trim();
+        if (inline) {
+            const existing = Array.isArray(business.owner_instructions) ? business.owner_instructions : [];
+            const updated = [...existing, {
+                content: inline,
+                source: 'teach',
+                created_at: new Date().toISOString()
+            }];
+            await this.supabase.from('businesses').update({ owner_instructions: updated }).eq('id', business.id);
+            return ctx.reply(
+                `✅ Learned!\n\n_"${inline}"_\n\n${business.assistant_name || 'MiniMe'} will use this knowledge when answering customers.`,
+                { parse_mode: 'Markdown' }
+            );
+        }
+
+        // Otherwise, show instructions
         return ctx.reply(
-            `*Teaching MiniMe*\n\n` +
-            `Send a product photo with the price in the caption\n` +
+            `*Teaching ${business.assistant_name || 'MiniMe'}*\n\n` +
+            `Send a product photo with price in the caption\n` +
             `Example: "iPhone 15 Pro 256GB - 75,000 ETB"\n\n` +
-            `Or just type product details as text.\n\n` +
+            `*Quick teach with text:*\n` +
+            `\`/teach We deliver to Bole free for orders over 5000 ETB\`\n` +
+            `\`/teach Our warranty is 1 year on all phones\`\n\n` +
+            `*Add behavior rules:*\n` +
+            `\`/rule Always mention warranty\`\n\n` +
             `Forward customer questions to teach FAQ answers.`,
             { parse_mode: 'Markdown' }
         );
@@ -281,15 +314,22 @@ class BotManager {
             .eq('business_id', business.id)
             .eq('status', 'active');
 
+        const rules = Array.isArray(business.owner_instructions) ? business.owner_instructions : [];
+        const samples = Array.isArray(business.sample_replies) ? business.sample_replies : [];
+        const shadowOn = business.rules?.shadow_mode !== false;
+
         return ctx.reply(
-            `*MiniMe Status*\n\n` +
-            `Business: ${business.business_name}\n` +
-            `Status: ${business.status === 'active' ? 'Active' : 'Inactive'}\n` +
-            `Mode: ${(business.modes || ['secretary']).join(', ')}\n` +
-            `Secretary: ${business.secretary_connected ? 'Connected' : 'Disconnected'}\n` +
-            `Custom Bot: ${business.bot_username ? `@${business.bot_username}` : 'Not set'}\n\n` +
-            `Products: ${productCount || 0}\n` +
-            `Rating: ${business.average_rating || 0}/5`,
+            `*Status — ${business.assistant_name || 'MiniMe'}*\n\n` +
+            `🏪 Business: ${business.business_name}\n` +
+            `🎭 Assistant: *${business.assistant_name || 'MiniMe'}*\n` +
+            `🗣 Tone: ${business.tone || 'warm'}\n` +
+            `🌍 Language: ${business.language_preference || 'mixed'}\n` +
+            `👁 Shadow mode: ${shadowOn ? '*ON* (you approve drafts)' : '*OFF* (auto-pilot)'}\n` +
+            `📦 Products: ${productCount || 0}\n` +
+            `📚 Rules taught: ${rules.length}\n` +
+            `💬 Sample replies learned: ${samples.length}\n` +
+            `⭐ Rating: ${business.average_rating || 0}/5\n\n` +
+            `Configure: /name /tone /lang /shadow /rules`,
             { parse_mode: 'Markdown' }
         );
     }
@@ -300,6 +340,192 @@ class BotManager {
                 inline_keyboard: [[{ text: 'Open Settings', web_app: { url: this.config.WEB_URL } }]]
             }
         });
+    }
+
+    // ── Persona & Learning Commands ────────────────────────────────────────────
+
+    async cmdSetName(ctx) {
+        const business = await this.getOwnerBusiness(ctx.from.id);
+        if (!business) return ctx.reply('Please /start first.');
+        const name = ctx.message.text.replace(/^\/name(@\S+)?\s*/, '').trim();
+        if (!name) {
+            return ctx.reply(
+                `Your assistant's current name is *${business.assistant_name || 'MiniMe'}*.\n\n` +
+                `To change it, send:\n\`/name Selam\`\n\nThis is how the AI will refer to itself when replying to customers.`,
+                { parse_mode: 'Markdown' }
+            );
+        }
+        if (name.length > 30) return ctx.reply('Name must be 30 characters or less.');
+        await this.supabase.from('businesses').update({ assistant_name: name }).eq('id', business.id);
+        return ctx.reply(`✅ Done! Your assistant is now called *${name}*.\n\nNext time a customer messages you, ${name} will introduce themselves.`, { parse_mode: 'Markdown' });
+    }
+
+    async cmdSetTone(ctx) {
+        const business = await this.getOwnerBusiness(ctx.from.id);
+        if (!business) return ctx.reply('Please /start first.');
+        const arg = ctx.message.text.replace(/^\/tone(@\S+)?\s*/, '').trim().toLowerCase();
+        const valid = ['warm', 'direct', 'professional'];
+        if (!valid.includes(arg)) {
+            return ctx.reply(
+                `Current tone: *${business.tone || 'warm'}*\n\n` +
+                `Set tone with: \`/tone warm\` / \`/tone direct\` / \`/tone professional\`\n\n` +
+                `• *warm* — friendly Ethiopian shopkeeper energy\n` +
+                `• *direct* — brief, no fluff, just facts\n` +
+                `• *professional* — polite, formal`,
+                { parse_mode: 'Markdown' }
+            );
+        }
+        await this.supabase.from('businesses').update({ tone: arg }).eq('id', business.id);
+        return ctx.reply(`✅ Tone set to *${arg}*.`, { parse_mode: 'Markdown' });
+    }
+
+    async cmdSetLanguage(ctx) {
+        const business = await this.getOwnerBusiness(ctx.from.id);
+        if (!business) return ctx.reply('Please /start first.');
+        const arg = ctx.message.text.replace(/^\/lang(@\S+)?\s*/, '').trim().toLowerCase();
+        const valid = ['en', 'am', 'mixed'];
+        if (!valid.includes(arg)) {
+            return ctx.reply(
+                `Current language: *${business.language_preference || 'mixed'}*\n\n` +
+                `Set with: \`/lang en\` / \`/lang am\` / \`/lang mixed\`\n\n` +
+                `• *en* — English only\n• *am* — Amharic only\n• *mixed* — Natural code-switching (recommended)`,
+                { parse_mode: 'Markdown' }
+            );
+        }
+        await this.supabase.from('businesses').update({ language_preference: arg }).eq('id', business.id);
+        return ctx.reply(`✅ Language set to *${arg}*.`, { parse_mode: 'Markdown' });
+    }
+
+    async cmdAddRule(ctx) {
+        const business = await this.getOwnerBusiness(ctx.from.id);
+        if (!business) return ctx.reply('Please /start first.');
+        const ruleText = ctx.message.text.replace(/^\/rule(@\S+)?\s*/, '').trim();
+        if (!ruleText) {
+            return ctx.reply(
+                `Add a behavior rule. Examples:\n\n` +
+                `• \`/rule Always mention the 1-year warranty\`\n` +
+                `• \`/rule Use emojis in every reply\`\n` +
+                `• \`/rule Never quote prices in DM, only in person\`\n` +
+                `• \`/rule If asked about delivery, say free over 1000 ETB\`\n\n` +
+                `Use \`/rules\` to see all current rules.`,
+                { parse_mode: 'Markdown' }
+            );
+        }
+        const existing = Array.isArray(business.owner_instructions) ? business.owner_instructions : [];
+        const newRule = {
+            content: ruleText,
+            source: 'rule',
+            created_at: new Date().toISOString()
+        };
+        const updated = [...existing, newRule];
+        await this.supabase.from('businesses').update({ owner_instructions: updated }).eq('id', business.id);
+        return ctx.reply(`✅ Rule #${updated.length} added:\n\n_"${ruleText}"_\n\n${business.assistant_name || 'MiniMe'} will follow this from now on.`, { parse_mode: 'Markdown' });
+    }
+
+    async cmdListRules(ctx) {
+        const business = await this.getOwnerBusiness(ctx.from.id);
+        if (!business) return ctx.reply('Please /start first.');
+        const rules = Array.isArray(business.owner_instructions) ? business.owner_instructions : [];
+        if (!rules.length) {
+            return ctx.reply(
+                `No rules yet. Add one with:\n\`/rule Always mention warranty\``,
+                { parse_mode: 'Markdown' }
+            );
+        }
+        const text = rules.map((r, i) => `${i + 1}. ${r.content || r.rule || r.text || r}`).join('\n');
+        const keyboard = rules.map((_, i) => [{ text: `🗑 Delete #${i + 1}`, callback_data: `rule_del_${i}` }]);
+        return ctx.reply(`*Active rules:*\n\n${text}`, {
+            parse_mode: 'Markdown',
+            reply_markup: { inline_keyboard: keyboard }
+        });
+    }
+
+    async cmdToggleShadow(ctx) {
+        const business = await this.getOwnerBusiness(ctx.from.id);
+        if (!business) return ctx.reply('Please /start first.');
+        const arg = ctx.message.text.replace(/^\/shadow(@\S+)?\s*/, '').trim().toLowerCase();
+        const rules = business.rules || {};
+        if (arg === 'on') rules.shadow_mode = true;
+        else if (arg === 'off') rules.shadow_mode = false;
+        else {
+            const current = rules.shadow_mode !== false;
+            return ctx.reply(
+                `Shadow mode is *${current ? 'ON' : 'OFF'}*.\n\n` +
+                `• *ON* — drafts go to you first; you approve before they reach customers\n` +
+                `• *OFF* — replies sent directly to customers (auto-pilot)\n\n` +
+                `Toggle: \`/shadow on\` or \`/shadow off\``,
+                { parse_mode: 'Markdown' }
+            );
+        }
+        await this.supabase.from('businesses').update({ rules }).eq('id', business.id);
+        return ctx.reply(`✅ Shadow mode *${rules.shadow_mode ? 'ON' : 'OFF'}*.`, { parse_mode: 'Markdown' });
+    }
+
+    // ── Pending Reply Approval (shadow mode) ───────────────────────────────────
+
+    async handlePendingReplyCallback(ctx, action, pendingId) {
+        const business = await this.getOwnerBusiness(ctx.from.id);
+        if (!business) return ctx.answerCbQuery('Not authorized');
+
+        const { data: pending } = await this.supabase
+            .from('pending_replies')
+            .select('*')
+            .eq('id', pendingId)
+            .single();
+
+        if (!pending) return ctx.answerCbQuery('Draft expired or not found');
+        if (pending.status !== 'pending') return ctx.answerCbQuery('Already handled');
+
+        if (action === 'approve') {
+            try {
+                await this.mainBot.telegram.sendMessage(pending.customer_chat_id, pending.suggested_reply, { parse_mode: 'Markdown' });
+                await this.supabase.from('pending_replies').update({
+                    status: 'approved',
+                    owner_action_at: new Date().toISOString(),
+                    owner_action_via: 'telegram'
+                }).eq('id', pendingId);
+                await ctx.editMessageText(ctx.callbackQuery.message.text + '\n\n✅ *Approved and sent.*', { parse_mode: 'Markdown' });
+            } catch (e) {
+                await ctx.answerCbQuery('Send failed: ' + e.message);
+                return;
+            }
+            return ctx.answerCbQuery('Sent!');
+        }
+
+        if (action === 'skip') {
+            await this.supabase.from('pending_replies').update({
+                status: 'rejected',
+                owner_action_at: new Date().toISOString(),
+                owner_action_via: 'telegram'
+            }).eq('id', pendingId);
+            await ctx.editMessageText(ctx.callbackQuery.message.text + '\n\n⏭ *Skipped.*', { parse_mode: 'Markdown' });
+            return ctx.answerCbQuery('Skipped');
+        }
+
+        if (action === 'edit') {
+            await ctx.answerCbQuery('Reply to this message with your edited version');
+            await this.mainBot.telegram.sendMessage(
+                ctx.from.id,
+                `✏️ *Edit draft #${pendingId.slice(0, 8)}*\n\nReply to THIS message with your new version. It will be sent to the customer.`,
+                { parse_mode: 'Markdown', reply_markup: { force_reply: true } }
+            );
+            // Mark as pending-edit so handleOwnerCorrection can find it
+            await this.supabase.from('pending_replies').update({ status: 'editing' }).eq('id', pendingId);
+        }
+    }
+
+    async handleRuleDelete(ctx, index) {
+        const business = await this.getOwnerBusiness(ctx.from.id);
+        if (!business) return ctx.answerCbQuery('Not authorized');
+        const rules = Array.isArray(business.owner_instructions) ? business.owner_instructions : [];
+        if (index < 0 || index >= rules.length) return ctx.answerCbQuery('Rule not found');
+        const removed = rules.splice(index, 1)[0];
+        await this.supabase.from('businesses').update({ owner_instructions: rules }).eq('id', business.id);
+        await ctx.answerCbQuery('Deleted');
+        await ctx.editMessageText(
+            (ctx.callbackQuery.message.text || '') + `\n\n🗑 Removed: _"${(removed.content || removed).toString().slice(0, 60)}"_`,
+            { parse_mode: 'Markdown' }
+        );
     }
 
     // ── Text & Media ───────────────────────────────────────────────────────────
@@ -457,6 +683,15 @@ class BotManager {
 
     async handleMainCallback(ctx) {
         const data = ctx.callbackQuery.data;
+
+        // Pending reply actions (shadow mode approval) — handle FIRST, don't answerCbQuery yet
+        if (data.startsWith('pr_approve_')) return this.handlePendingReplyCallback(ctx, 'approve', data.replace('pr_approve_', ''));
+        if (data.startsWith('pr_edit_')) return this.handlePendingReplyCallback(ctx, 'edit', data.replace('pr_edit_', ''));
+        if (data.startsWith('pr_skip_')) return this.handlePendingReplyCallback(ctx, 'skip', data.replace('pr_skip_', ''));
+
+        // Rule delete
+        if (data.startsWith('rule_del_')) return this.handleRuleDelete(ctx, parseInt(data.replace('rule_del_', ''), 10));
+
         await ctx.answerCbQuery();
 
         if (data === 'add_product') return ctx.reply('Send me a photo of your product with the price in the caption!');

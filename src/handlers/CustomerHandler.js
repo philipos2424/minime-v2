@@ -47,26 +47,31 @@ class CustomerHandler {
             // 5. Get relevant products
             const products = await this.getRelevantProducts(businessId, analysis);
 
-            // 6. Generate reply
+            // 6. Get recent conversation history (last 5 exchanges)
+            const history = await this.getRecentHistory(businessId, customerId, 5);
+
+            // 7. Generate reply
             const reply = await this.ai.generateConsultantReply(
-                business,
-                products,
-                text,
-                state,
-                analysis
+                business, products, text, state, analysis, history
             );
 
-            // 7. Update state
+            // 8. Update state
             await this.updateState(state, analysis, text);
 
-            // 8. Generate buttons based on stage
+            // 9. Generate buttons based on stage
             const buttons = this.generateButtons(state, analysis, products);
 
-            // 9. Send reply
-            await ctx.reply(reply, {
-                reply_markup: buttons ? { inline_keyboard: buttons } : undefined,
-                parse_mode: 'Markdown'
-            });
+            // 10. Send — shadow mode (draft to owner) or auto (direct to customer)
+            const shadowMode = business.rules?.shadow_mode !== false; // default ON
+            if (shadowMode) {
+                await this.sendDraftToOwner(business, ctx, text, reply, analysis);
+                // Don't send to customer yet — owner approves first
+            } else {
+                await ctx.reply(reply, {
+                    reply_markup: buttons ? { inline_keyboard: buttons } : undefined,
+                    parse_mode: 'Markdown'
+                });
+            }
 
             // 10. Log conversation
             await this.logConversation({
@@ -93,6 +98,66 @@ class CustomerHandler {
             console.error('Customer handler error:', error);
             await ctx.reply('Sorry, something went wrong. Let me connect you with the owner.');
             await this.escalateToOwner(ctx, { id: businessId }, text, { needs_escalation: true });
+        }
+    }
+
+    async getRecentHistory(businessId, customerId, limit = 5) {
+        const { data } = await this.supabase
+            .from('conversations')
+            .select('customer_message, bot_reply, created_at')
+            .eq('business_id', businessId)
+            .eq('customer_telegram_id', customerId)
+            .order('created_at', { ascending: false })
+            .limit(limit);
+        return (data || []).reverse();
+    }
+
+    async sendDraftToOwner(business, ctx, customerMessage, draftReply, analysis) {
+        // Store as pending reply
+        const { data: pending } = await this.supabase.from('pending_replies').insert({
+            business_id: business.id,
+            customer_chat_id: ctx.chat.id,
+            customer_telegram_id: ctx.from.id,
+            original_message: customerMessage,
+            suggested_reply: draftReply,
+            suggested_reply_confidence: (analysis.confidence || 50) / 100,
+            status: 'pending',
+            auto_approve_at: new Date(Date.now() + 30 * 60 * 1000).toISOString()
+        }).select().single();
+
+        // Notify owner via main bot
+        const ownerChatId = business.secretary_chat_id || business.owner_telegram_id;
+        if (!ownerChatId) return;
+
+        const customerName = ctx.from.first_name || ctx.from.username || 'Customer';
+        const confidencePct = analysis.confidence || 50;
+        const draftMsg =
+            `💬 *New message from ${customerName}*\n\n` +
+            `"${customerMessage.slice(0, 200)}"\n\n` +
+            `📝 *${business.assistant_name || 'MiniMe'}'s draft:*\n` +
+            `${draftReply}\n\n` +
+            `_Confidence: ${confidencePct}% • Intent: ${analysis.intent || 'unknown'}_`;
+
+        try {
+            const mainBot = require('../services/telegram/_botInstance').get();
+            if (mainBot && pending?.id) {
+                await mainBot.telegram.sendMessage(ownerChatId, draftMsg, {
+                    parse_mode: 'Markdown',
+                    reply_markup: {
+                        inline_keyboard: [
+                            [
+                                { text: '✅ Approve', callback_data: `pr_approve_${pending.id}` },
+                                { text: '✏️ Edit', callback_data: `pr_edit_${pending.id}` }
+                            ],
+                            [
+                                { text: '⏭ Skip', callback_data: `pr_skip_${pending.id}` }
+                            ]
+                        ]
+                    }
+                });
+            }
+        } catch (e) {
+            console.error('[draft] notify owner failed:', e.message);
         }
     }
 
