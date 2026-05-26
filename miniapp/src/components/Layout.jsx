@@ -1,13 +1,7 @@
 import React from 'react'
 import { Link, useLocation } from 'react-router-dom'
-import { 
-  LayoutDashboard, 
-  Inbox, 
-  Package, 
-  BarChart3, 
-  Settings,
-  Store
-} from 'lucide-react'
+import { LayoutDashboard, Inbox, Package, BarChart3, Settings } from 'lucide-react'
+import { MiniMeLogo } from './MiniMeLogo'
 import '../styles/Layout.css'
 
 function Layout({ children, user }) {
@@ -26,8 +20,8 @@ function Layout({ children, user }) {
       <header className="app-header">
         <div className="header-content">
           <div className="logo">
-            <Store size={24} />
-            <span>MiniMe</span>
+            <MiniMeLogo size={28} color="#0E2823" accent="#B08A4A" />
+            <span style={{ fontFamily: "'Georgia', serif", fontStyle: 'italic', fontWeight: 300, fontSize: 20, letterSpacing: '-0.01em' }}>minime</span>
           </div>
           {user && (
             <div className="user-info">
