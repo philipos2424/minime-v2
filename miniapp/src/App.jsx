@@ -11,24 +11,25 @@ import './styles/App.css'
 
 function App() {
   const webApp = useWebApp()
-  const ready = !!webApp
-  const expand = () => webApp?.expand?.()
   const [user, setUser] = useState(null)
-  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    if (ready) {
-      expand()
-      // Get user from Telegram WebApp
-      const tg = window.Telegram?.WebApp
-      if (tg?.initDataUnsafe?.user) {
+    // Expand to full screen
+    try { webApp?.expand?.() } catch {}
+
+    // Get user from Telegram WebApp
+    const tg = window.Telegram?.WebApp
+    if (tg) {
+      try { tg.ready?.() } catch {}
+      try { tg.expand?.() } catch {}
+      if (tg.initDataUnsafe?.user) {
         setUser(tg.initDataUnsafe.user)
-        // Authenticate with backend
+      }
+      if (tg.initData) {
         authenticateUser(tg.initData)
       }
-      setLoading(false)
     }
-  }, [ready, expand])
+  }, [webApp])
 
   const authenticateUser = async (initData) => {
     try {
@@ -44,15 +45,6 @@ function App() {
     } catch (error) {
       console.error('Auth error:', error)
     }
-  }
-
-  if (loading) {
-    return (
-      <div className="loading-screen">
-        <div className="loading-spinner"></div>
-        <p>Loading MiniMe...</p>
-      </div>
-    )
   }
 
   return (
