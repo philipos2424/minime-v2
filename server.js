@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
+const path = require('path');
 const { createClient } = require('@supabase/supabase-js');
 
 const { validateEnv, config } = require('./src/config/environment');
@@ -54,11 +55,21 @@ app.use((req, res, next) => {
     next();
 });
 
-// ── Routes ─────────────────────────────────────────────────────────────────
+// ── Serve React Mini App (static files) ────────────────────────────────────
+const publicDir = path.join(__dirname, 'public');
+app.use(express.static(publicDir));
+
+// ── API Routes ─────────────────────────────────────────────────────────────
 app.use('/miniapp', miniappRoutes);
 app.use('/webhook', webhookRoutes);
 app.use('/health', healthRoutes);
 app.use('/api', apiRoutes);
+
+// SPA fallback — serve index.html for all non-API routes (React Router handles them)
+app.get('*', (req, res) => {
+    res.sendFile(path.join(publicDir, 'index.html'));
+});
+
 app.use(errorMiddleware);
 
 // ── Local dev: start with polling ──────────────────────────────────────────

@@ -14,7 +14,7 @@
   ],
   "env": {
     "NODE_ENV": "production",
-    "WEB_URL": "https://minime-miniapp.vercel.app"
+    "WEB_URL": "https://minime-v2-omega.vercel.app"
   },
   "crons": [
     {
