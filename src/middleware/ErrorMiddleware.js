@@ -1,39 +1,26 @@
-class ErrorMiddleware {
-    static async handle(err, req, res, next) {
-        console.error('Error:', err);
+// Express error handler — must be a plain function, not a class
+async function errorHandler(err, req, res, next) {
+    console.error('[Error]', err.message);
 
-        // Log to audit
-        if (req.context?.auditService) {
-            await req.context.auditService.log({
-                tableName: 'errors',
-                action: 'ERROR',
-                newData: {
-                    message: err.message,
-                    stack: err.stack,
-                    url: req.url,
-                    method: req.method
-                },
-                actorTelegramId: req.userId,
-                severity: 'critical'
-            });
-        }
-
-        // Don't leak error details in production
-        const isDev = req.context?.config?.NODE_ENV === 'development';
-
-        res.status(err.status || 500).json({
-            error: isDev ? err.message : 'Internal server error',
-            ...(isDev && { stack: err.stack }),
-            requestId: req.id
-        });
+    if (req.context?.auditService) {
+        req.context.auditService.log({
+            tableName: 'errors',
+            action: 'ERROR',
+            newData: { message: err.message, url: req.url, method: req.method },
+            severity: 'critical'
+        }).catch(() => {});
     }
 
-    static notFound(req, res) {
-        res.status(404).json({
-            error: 'Not found',
-            path: req.path
-        });
-    }
+    const isDev = process.env.NODE_ENV === 'development';
+    res.status(err.status || 500).json({
+        error: isDev ? err.message : 'Internal server error',
+        ...(isDev && { stack: err.stack })
+    });
 }
 
-module.exports = ErrorMiddleware;
+function notFound(req, res) {
+    res.status(404).json({ error: 'Not found', path: req.path });
+}
+
+module.exports = errorHandler;
+module.exports.notFound = notFound;
