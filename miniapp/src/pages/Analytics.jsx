@@ -28,7 +28,10 @@ function Analytics() {
       })
 
       const result = await response.json()
-      setData(result)
+      setData({
+        daily: Array.isArray(result.daily) ? result.daily : [],
+        totals: result.totals || {}
+      })
     } catch (error) {
       console.error('Analytics fetch error:', error)
     } finally {
@@ -36,7 +39,7 @@ function Analytics() {
     }
   }
 
-  const chartData = data.daily.map(day => ({
+  const chartData = (data.daily || []).map(day => ({
     date: new Date(day.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
     conversations: day.total_conversations || 0,
     autoReplies: day.auto_replies || 0,
