@@ -72,9 +72,10 @@ class BotManager {
         bot.command('rule', ctx => this.cmdAddRule(ctx));
         bot.command('rules', ctx => this.cmdListRules(ctx));
         bot.command('shadow', ctx => this.cmdToggleShadow(ctx));
-        bot.on(message('photo'), ctx => this.handleOwnerUpload(ctx));
-        bot.on(message('document'), ctx => this.handleOwnerUpload(ctx));
-        bot.on(message('voice'), ctx => this.handleOwnerUpload(ctx));
+        bot.command('advisor', ctx => this.cmdAdvisor(ctx));
+        bot.on(message('photo'), ctx => this.handleOwnerMedia(ctx));
+        bot.on(message('document'), ctx => this.handleOwnerMedia(ctx));
+        bot.on(message('voice'), ctx => this.handleOwnerMedia(ctx));
         bot.on(message('text'), ctx => this.handleMainBotText(ctx));
         bot.on('callback_query', ctx => this.handleMainCallback(ctx));
         bot.catch((err) => {
@@ -671,6 +672,206 @@ class BotManager {
         return this.handleOwnerTrainingText(ctx, business, text);
     }
 
+    // ── Forwarded message learning ─────────────────────────────────────────────
+    async handleOwnerMedia(ctx) {
+        const msg = ctx.message;
+        // Detect forwarded messages (any version of the Telegram API)
+        const isForwarded = !!(msg.forward_from || msg.forward_from_chat || msg.forward_sender_name || msg.forward_origin);
+        if (isForwarded) return this.handleOwnerForward(ctx);
+        return this.handleOwnerUpload(ctx);
+    }
+
+    async handleOwnerForward(ctx) {
+        const business = await this.getOwnerBusiness(ctx.from.id);
+        if (!business) return ctx.reply('Please /start first.');
+
+        const msg = ctx.message;
+        const forwardedFrom =
+            msg.forward_from?.first_name ||
+            msg.forward_from?.username ||
+            msg.forward_from_chat?.title ||
+            msg.forward_origin?.sender_user?.first_name ||
+            msg.forward_origin?.sender_user_name ||
+            msg.forward_sender_name ||
+            'a customer';
+
+        const caption = (msg.caption || '').trim();
+        const messageText = msg.text || caption || '';
+
+        await ctx.reply(`📨 Learning from forwarded message from *${forwardedFrom}*…`, { parse_mode: 'Markdown' });
+
+        try {
+            let learnedText = messageText;
+
+            // If there's media, transcribe / extract first
+            if (msg.photo?.length) {
+                const fileId = msg.photo[msg.photo.length - 1].file_id;
+                const fileUrl = await this.getFileUrl(fileId);
+                const extraction = await this.ai.extractFromImage(fileUrl, caption);
+                learnedText = `[forwarded photo from ${forwardedFrom}]\n${caption}\n` + JSON.stringify(extraction);
+
+                // Save as a product if extracted
+                if (extraction.name || extraction.price) {
+                    await this.supabase.from('business_content').insert({
+                        business_id: business.id,
+                        content_type: 'photo',
+                        file_url: fileUrl,
+                        file_id: fileId,
+                        raw_text: caption,
+                        caption,
+                        extracted_type: extraction.extracted_type || 'product',
+                        extracted_data: extraction,
+                        name: extraction.name,
+                        description: extraction.description,
+                        price: extraction.price,
+                        currency: 'ETB',
+                        category: extraction.category,
+                        tags: extraction.tags || [],
+                        owner_confirmed: false
+                    });
+                }
+            } else if (msg.document) {
+                const fileId = msg.document.file_id;
+                const fileUrl = await this.getFileUrl(fileId);
+                learnedText = `[forwarded ${msg.document.mime_type || 'file'} from ${forwardedFrom}]\n${caption || msg.document.file_name}`;
+                await this.supabase.from('business_content').insert({
+                    business_id: business.id,
+                    content_type: 'document',
+                    file_url: fileUrl,
+                    file_id: fileId,
+                    raw_text: caption || msg.document.file_name,
+                    caption,
+                    extracted_type: 'business_info',
+                    owner_confirmed: true
+                });
+            }
+
+            // Always save as a learning sample — this is how the AI picks up the owner's
+            // voice and typical customer questions
+            const existingSamples = Array.isArray(business.sample_replies) ? business.sample_replies : [];
+            const newSample = {
+                source: 'forward',
+                from: forwardedFrom,
+                content: learnedText.slice(0, 1000),
+                owner_caption: caption || null,
+                created_at: new Date().toISOString()
+            };
+            const updatedSamples = [newSample, ...existingSamples].slice(0, 30);
+
+            // If caption looks like "Q: ... A: ..." or has a clear answer, save as FAQ
+            const looksLikeFaq = caption && (caption.length > 20 || /\?/.test(messageText));
+            const instructionsUpdate = looksLikeFaq ? {
+                owner_instructions: [
+                    ...(business.owner_instructions || []),
+                    {
+                        source: 'faq',
+                        question: messageText.slice(0, 200),
+                        answer: caption,
+                        created_at: new Date().toISOString()
+                    }
+                ]
+            } : {};
+
+            await this.supabase.from('businesses').update({
+                sample_replies: updatedSamples,
+                ...instructionsUpdate
+            }).eq('id', business.id);
+
+            const summary = looksLikeFaq
+                ? `📚 Saved as FAQ!\n\nQ: _"${messageText.slice(0, 100)}"_\nA: _"${caption.slice(0, 150)}"_\n\nNext time a customer asks something similar, I'll use this exact answer.`
+                : `✅ Learned!\n\nI saved this as a voice sample. Forward more messages with captions like "Q: ... A: ..." to teach me exact answers.\n\n*Tip:* Forward customer messages with the perfect reply you would have sent — I'll mimic your style.`;
+
+            return ctx.reply(summary, { parse_mode: 'Markdown' });
+        } catch (e) {
+            console.error('[forward learn] error:', e.message);
+            return ctx.reply(`❌ Couldn't learn from that. ${e.message}`);
+        }
+    }
+
+    // ── AI Advisor ─────────────────────────────────────────────────────────────
+    async cmdAdvisor(ctx) {
+        const business = await this.getOwnerBusiness(ctx.from.id);
+        if (!business) return ctx.reply('Please /start first.');
+
+        const question = ctx.message.text.replace(/^\/advisor(@\S+)?\s*/, '').trim();
+        if (!question) {
+            return ctx.reply(
+                `🧠 *${business.assistant_name || 'MiniMe'} Advisor*\n\n` +
+                `Ask me anything about your business:\n\n` +
+                `• \`/advisor what should I focus on this week?\`\n` +
+                `• \`/advisor which products sell best?\`\n` +
+                `• \`/advisor how do I increase orders?\`\n` +
+                `• \`/advisor what did customers ask today?\`\n\n` +
+                `I'll analyze your data and give you a clear answer.`,
+                { parse_mode: 'Markdown' }
+            );
+        }
+
+        await ctx.reply(`🧠 Thinking...`);
+
+        try {
+            // Gather business context
+            const today = new Date().toISOString().split('T')[0];
+            const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString();
+
+            const [
+                { data: products },
+                { count: todayConversations },
+                { count: weekConversations },
+                { data: recentConvos },
+                { data: pendingReplies },
+                { count: totalReservations }
+            ] = await Promise.all([
+                this.supabase.from('business_content').select('name, price, view_count, inquiry_count, stock_quantity').eq('business_id', business.id).eq('status', 'active').eq('extracted_type', 'product').limit(20),
+                this.supabase.from('conversations').select('id', { count: 'exact', head: true }).eq('business_id', business.id).gte('created_at', today),
+                this.supabase.from('conversations').select('id', { count: 'exact', head: true }).eq('business_id', business.id).gte('created_at', weekAgo),
+                this.supabase.from('conversations').select('customer_message, intent, sentiment').eq('business_id', business.id).gte('created_at', weekAgo).limit(20),
+                this.supabase.from('pending_replies').select('id', { count: 'exact', head: true }).eq('business_id', business.id).eq('status', 'pending'),
+                this.supabase.from('transactions').select('id', { count: 'exact', head: true }).eq('business_id', business.id).gte('created_at', weekAgo)
+            ]);
+
+            const productLines = (products || []).map(p =>
+                `• ${p.name} — ${p.price ? p.price + ' ETB' : 'no price'} (views: ${p.view_count || 0}, inquiries: ${p.inquiry_count || 0}${p.stock_quantity != null ? ', stock: ' + p.stock_quantity : ''})`
+            ).join('\n') || '(no products)';
+
+            const recentQuestions = (recentConvos || []).slice(0, 10).map(c =>
+                `• ${c.customer_message?.slice(0, 80) || ''} (intent: ${c.intent}, ${c.sentiment})`
+            ).join('\n') || '(no recent conversations)';
+
+            const systemPrompt = `You are the AI advisor for ${business.business_name}, an Ethiopian ${business.category || 'business'}.
+Be DIRECT, give SPECIFIC actionable advice. Use the business's actual data below. Don't generalize.
+
+BUSINESS STATE:
+- Today's conversations: ${todayConversations || 0}
+- Last 7 days: ${weekConversations || 0} conversations, ${totalReservations || 0} reservations
+- Pending draft replies awaiting owner: ${pendingReplies?.count || 0}
+
+PRODUCTS:
+${productLines}
+
+RECENT CUSTOMER QUESTIONS (last 7 days):
+${recentQuestions}
+
+TONE: friendly, like a smart business mentor talking to an Ethiopian shopkeeper. Mix Amharic-English naturally if appropriate. Keep under 200 words. Use bullet points if listing.`;
+
+            const response = await this.ai.client.chat.completions.create({
+                model: 'gpt-4o-mini',
+                messages: [
+                    { role: 'system', content: systemPrompt },
+                    { role: 'user', content: question }
+                ],
+                temperature: 0.7,
+                max_tokens: 500
+            });
+
+            const answer = response.choices[0].message.content;
+            return ctx.reply(`🧠 *Advisor:*\n\n${answer}`, { parse_mode: 'Markdown' });
+        } catch (e) {
+            console.error('[advisor] error:', e.message);
+            return ctx.reply(`❌ Couldn't get advice right now. ${e.message}`);
+        }
+    }
+
     async handleOwnerUpload(ctx) {
         const business = await this.getOwnerBusiness(ctx.from.id);
         if (!business) return ctx.reply('Please /start first.');
@@ -774,35 +975,73 @@ class BotManager {
     async handleOwnerCorrection(ctx, business) {
         const correction = ctx.message.text;
 
+        // Find the most recent pending or editing reply
         const { data: pending } = await this.supabase
             .from('pending_replies')
             .select('*')
             .eq('business_id', business.id)
-            .eq('status', 'pending')
+            .in('status', ['pending', 'editing'])
             .order('created_at', { ascending: false })
             .limit(1)
             .single();
 
         if (!pending) return ctx.reply('No pending reply found.');
 
+        // Send the edited reply to the customer
+        try {
+            await this.mainBot.telegram.sendMessage(pending.customer_chat_id, correction, { parse_mode: 'Markdown' });
+        } catch (e) {
+            console.error('[edit send] failed:', e.message);
+            return ctx.reply(`❌ Couldn't send the edit to the customer: ${e.message}`);
+        }
+
         await this.supabase.from('pending_replies')
-            .update({ status: 'edited', owner_edited_text: correction, owner_action_at: new Date().toISOString() })
-            .eq('id', pending.id);
+            .update({
+                status: 'edited',
+                owner_edited_text: correction,
+                owner_action_at: new Date().toISOString(),
+                owner_action_via: 'telegram',
+                learned_from_this: true
+            }).eq('id', pending.id);
 
-        // Learn from this correction
-        await this.supabase.from('business_content').insert({
-            business_id: business.id,
-            content_type: 'text',
-            extracted_type: 'faq',
-            extracted_data: {
-                question: pending.original_message,
+        // ── LEARNING: save edited reply as a sample_reply for future voice matching ──
+        const existingSamples = Array.isArray(business.sample_replies) ? business.sample_replies : [];
+        const isMeaningfulEdit = correction.length > 10 && correction.length < 800;
+        if (isMeaningfulEdit) {
+            const newSample = {
+                source: 'owner_edit',
+                question: pending.original_message?.slice(0, 300),
                 answer: correction,
-                source: 'owner_correction'
-            },
-            owner_confirmed: true
-        });
+                created_at: new Date().toISOString()
+            };
+            const updatedSamples = [newSample, ...existingSamples].slice(0, 30);
+            await this.supabase.from('businesses').update({ sample_replies: updatedSamples }).eq('id', business.id);
+        }
 
-        return ctx.reply(`Sent your correction and learned from it.\n\nQ: "${(pending.original_message || '').slice(0, 80)}"\nA: "${correction}"`);
+        // Also store as FAQ if it's a clean Q&A pair
+        if (pending.original_message && correction.length > 10) {
+            await this.supabase.from('business_content').insert({
+                business_id: business.id,
+                content_type: 'text',
+                extracted_type: 'faq',
+                raw_text: pending.original_message,
+                description: correction,
+                extracted_data: {
+                    question: pending.original_message,
+                    answer: correction,
+                    source: 'owner_correction'
+                },
+                owner_confirmed: true
+            });
+        }
+
+        return ctx.reply(
+            `✅ *Sent and learned!*\n\n` +
+            `Q: _"${(pending.original_message || '').slice(0, 100)}"_\n` +
+            `A: _"${correction.slice(0, 150)}"_\n\n` +
+            `${business.assistant_name || 'MiniMe'} will use your style next time.`,
+            { parse_mode: 'Markdown' }
+        );
     }
 
     // ── Callback Queries ───────────────────────────────────────────────────────

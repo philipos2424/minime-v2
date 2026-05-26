@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import Layout from './components/Layout'
+import { Splash } from './components/Splash'
 import Dashboard from './pages/Dashboard'
 import Inbox from './pages/Inbox'
 import Products from './pages/Products'
@@ -10,6 +11,7 @@ import './styles/App.css'
 
 function App() {
   const [user, setUser] = useState(null)
+  const [splashDone, setSplashDone] = useState(false)
 
   useEffect(() => {
     // Use window.Telegram.WebApp directly — most reliable approach
@@ -34,6 +36,10 @@ function App() {
       }
     }
   }, [])
+
+  if (!splashDone) {
+    return <Splash onDone={() => setSplashDone(true)} />
+  }
 
   return (
     <Layout user={user}>
