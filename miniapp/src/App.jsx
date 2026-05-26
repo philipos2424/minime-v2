@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
-import { useTelegramWebApp } from '@vkruglikov/react-telegram-web-app'
+import { useWebApp } from '@vkruglikov/react-telegram-web-app'
 import Layout from './components/Layout'
 import Dashboard from './pages/Dashboard'
 import Inbox from './pages/Inbox'
@@ -10,7 +10,9 @@ import Settings from './pages/Settings'
 import './styles/App.css'
 
 function App() {
-  const { ready, expand } = useTelegramWebApp()
+  const webApp = useWebApp()
+  const ready = !!webApp
+  const expand = () => webApp?.expand?.()
   const [user, setUser] = useState(null)
   const [loading, setLoading] = useState(true)
 
