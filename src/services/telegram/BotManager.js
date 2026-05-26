@@ -11,6 +11,7 @@ class BotManager {
         this.encryption = encryptionService;
         this.config = config;
         this.bots = new Map();   // businessId -> { bot, token, username }
+        this.signupSessions = new Map(); // userId -> { step, data }
         this.ai = new OpenAIService(config.OPENAI_API_KEY);
 
         // Create bots synchronously so they're ready immediately for webhook calls.
@@ -109,21 +110,21 @@ class BotManager {
             const today = await this.getTodayStats(business.id);
             return ctx.reply(
                 `Welcome back, *${business.business_name}*!\n\n` +
-                `Today: ${today.conversations} conversations, ${today.leads} leads\n` +
-                `Rating: ${business.average_rating || 0}/5 (${business.total_reviews || 0} reviews)\n\n` +
-                `Send a product photo to add inventory, or use a command below.`,
+                `🎭 Assistant: *${business.assistant_name || 'MiniMe'}*\n` +
+                `Today: ${today.conversations} conversations, ${today.leads} leads\n\n` +
+                `Send a product photo to add inventory, or tap a button below.`,
                 {
                     parse_mode: 'Markdown',
                     reply_markup: {
                         inline_keyboard: [
-                            [{ text: 'Open Dashboard', web_app: { url: this.config.WEB_URL } }],
+                            [{ text: '📱 Open Dashboard', web_app: { url: this.config.WEB_URL } }],
                             [
-                                { text: 'Add Product', callback_data: 'add_product' },
-                                { text: 'Inbox', callback_data: 'view_inbox' }
+                                { text: '📦 Products', callback_data: 'view_products' },
+                                { text: '📬 Inbox', callback_data: 'view_inbox' }
                             ],
                             [
-                                { text: 'Products', callback_data: 'view_products' },
-                                { text: 'Settings', callback_data: 'settings' }
+                                { text: '🎓 Teach', callback_data: 'show_teach' },
+                                { text: '⚙️ Status', callback_data: 'show_status' }
                             ]
                         ]
                     }
@@ -131,13 +132,131 @@ class BotManager {
             );
         }
 
-        // New user — onboarding
+        // ── New user — start conversational signup ────────────────────────────
+        this.signupSessions.set(userId, { step: 'name', data: { owner_name: ctx.from.first_name } });
         return ctx.reply(
-            `Welcome to *MiniMe*!\n\n` +
-            `I'm your AI sales assistant for Telegram. I handle customer messages while you focus on selling.\n\n` +
-            `How do you want to get started?`,
+            `👋 *Welcome to MiniMe!*\n\n` +
+            `I'm your AI sales assistant. Customers message you on Telegram — I reply for you, in your voice, 24/7.\n\n` +
+            `Let's get you set up (takes 30 seconds).\n\n` +
+            `*What's your business called?*\n` +
+            `_(Example: Selam Boutique, Bole Tech, Habesha Cafe)_`,
+            { parse_mode: 'Markdown' }
+        );
+    }
+
+    async handleSignupText(ctx) {
+        const userId = ctx.from.id;
+        const session = this.signupSessions.get(userId);
+        if (!session) return false; // not in signup
+        const text = ctx.message.text.trim();
+
+        if (session.step === 'name') {
+            if (text.length < 2 || text.length > 60) {
+                await ctx.reply('Please send a business name between 2 and 60 characters.');
+                return true;
+            }
+            session.data.business_name = text;
+            session.step = 'category';
+            this.signupSessions.set(userId, session);
+            await ctx.reply(
+                `Great — *${text}* 🎉\n\n*What do you sell?* Pick a category:`,
+                {
+                    parse_mode: 'Markdown',
+                    reply_markup: {
+                        inline_keyboard: [
+                            [
+                                { text: '📱 Electronics', callback_data: 'signup_cat_electronics' },
+                                { text: '👗 Fashion', callback_data: 'signup_cat_clothing' }
+                            ],
+                            [
+                                { text: '🍽 Food & Catering', callback_data: 'signup_cat_food' },
+                                { text: '💆 Beauty', callback_data: 'signup_cat_beauty' }
+                            ],
+                            [
+                                { text: '🏠 Furniture/Home', callback_data: 'signup_cat_furniture' },
+                                { text: '🛠 Services', callback_data: 'signup_cat_services' }
+                            ],
+                            [
+                                { text: '📸 Photography', callback_data: 'signup_cat_photography' },
+                                { text: '🚚 Delivery', callback_data: 'signup_cat_delivery' }
+                            ],
+                            [{ text: '🏪 Other', callback_data: 'signup_cat_other' }]
+                        ]
+                    }
+                }
+            );
+            return true;
+        }
+
+        // Fallback — re-prompt
+        await ctx.reply('Tap one of the category buttons above, or send /start to restart.');
+        return true;
+    }
+
+    async finishSignup(ctx, category) {
+        const userId = ctx.from.id;
+        const session = this.signupSessions.get(userId);
+        if (!session) {
+            return ctx.reply('Session expired. Send /start to restart.');
+        }
+
+        // Create the business row
+        const { data: business, error } = await this.supabase.from('businesses').insert({
+            owner_telegram_id: userId,
+            owner_telegram_username: ctx.from.username || null,
+            owner_name: session.data.owner_name || ctx.from.first_name || null,
+            business_name: session.data.business_name,
+            category,
+            assistant_name: 'MiniMe',
+            tone: 'warm',
+            language_preference: 'mixed',
+            secretary_chat_id: ctx.chat.id,
+            status: 'active',
+            modes: ['secretary'],
+            primary_mode: 'secretary',
+            rules: {
+                shadow_mode: true,
+                auto_reply: false,
+                notify_on_sale: true,
+                payment_methods: ['cash', 'telebirr']
+            }
+        }).select().single();
+
+        this.signupSessions.delete(userId);
+
+        if (error) {
+            console.error('[signup] insert failed:', error);
+            return ctx.reply(`❌ Setup failed: ${error.message}\n\nTry /start again.`);
+        }
+
+        return ctx.reply(
+            `✅ *${business.business_name} is live!*\n\n` +
+            `Your AI assistant *MiniMe* is ready. Here's what to do next:\n\n` +
+            `1️⃣ Send a product photo with the price in the caption\n` +
+            `2️⃣ Use \`/teach We deliver to Bole free over 5000 ETB\`\n` +
+            `3️⃣ Use \`/rule Always mention warranty\` for behavior rules\n` +
+            `4️⃣ Use \`/name Selam\` to give your assistant a custom name\n\n` +
+            `When customers message your bot/account, I'll draft replies and send them to you for approval (shadow mode is ON by default).\n\n` +
+            `Try sending me a product photo now! 📸`,
             {
                 parse_mode: 'Markdown',
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: '📱 Open Dashboard', web_app: { url: this.config.WEB_URL } }],
+                        [
+                            { text: '🎓 Teach me something', callback_data: 'show_teach' },
+                            { text: '⚙️ Status', callback_data: 'show_status' }
+                        ]
+                    ]
+                }
+            }
+        );
+    }
+
+    // legacy path — kept for old callback compatibility
+    async _legacyStartFlow(ctx) {
+        return ctx.reply('Welcome! Send /start to begin setup.',
+            {
                 reply_markup: {
                     inline_keyboard: [
                         [{ text: 'Open MiniMe App', web_app: { url: this.config.WEB_URL } }],
@@ -531,12 +650,19 @@ class BotManager {
     // ── Text & Media ───────────────────────────────────────────────────────────
 
     async handleMainBotText(ctx) {
+        // First: are they in the middle of signup?
+        if (this.signupSessions.has(ctx.from.id)) {
+            return this.handleSignupText(ctx);
+        }
+
         const business = await this.getOwnerBusiness(ctx.from.id);
-        if (!business) return ctx.reply('Please /start to set up your business.');
+        if (!business) {
+            return ctx.reply('👋 Send /start to set up your business.');
+        }
 
         const text = ctx.message.text;
 
-        // Owner replying to a bot suggestion
+        // Owner replying to a bot suggestion (draft edit)
         if (ctx.message.reply_to_message?.from?.is_bot) {
             return this.handleOwnerCorrection(ctx, business);
         }
@@ -684,7 +810,7 @@ class BotManager {
     async handleMainCallback(ctx) {
         const data = ctx.callbackQuery.data;
 
-        // Pending reply actions (shadow mode approval) — handle FIRST, don't answerCbQuery yet
+        // Pending reply actions (shadow mode approval)
         if (data.startsWith('pr_approve_')) return this.handlePendingReplyCallback(ctx, 'approve', data.replace('pr_approve_', ''));
         if (data.startsWith('pr_edit_')) return this.handlePendingReplyCallback(ctx, 'edit', data.replace('pr_edit_', ''));
         if (data.startsWith('pr_skip_')) return this.handlePendingReplyCallback(ctx, 'skip', data.replace('pr_skip_', ''));
@@ -692,13 +818,20 @@ class BotManager {
         // Rule delete
         if (data.startsWith('rule_del_')) return this.handleRuleDelete(ctx, parseInt(data.replace('rule_del_', ''), 10));
 
+        // Signup category selection
+        if (data.startsWith('signup_cat_')) {
+            await ctx.answerCbQuery('Setting up...');
+            return this.finishSignup(ctx, data.replace('signup_cat_', ''));
+        }
+
         await ctx.answerCbQuery();
 
         if (data === 'add_product') return ctx.reply('Send me a photo of your product with the price in the caption!');
         if (data === 'view_inbox') return this.ownerOrders(ctx);
         if (data === 'view_products') return this.ownerProducts(ctx);
         if (data === 'settings') return this.ownerSettings(ctx);
-        if (data.startsWith('signup_')) return this.handleSignupChoice(ctx, data.replace('signup_', ''));
+        if (data === 'show_teach') return this.ownerTeach(ctx);
+        if (data === 'show_status') return this.ownerStatus(ctx);
 
         if (data.startsWith('confirm_')) {
             await this.supabase.from('business_content').update({ owner_confirmed: true }).eq('id', data.replace('confirm_', ''));
