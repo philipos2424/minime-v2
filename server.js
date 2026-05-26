@@ -29,52 +29,28 @@ const encryptionService = new EncryptionService(config.ENCRYPTION_KEY);
 const auditService = new AuditService(supabase);
 const rateLimiter = new RateLimiter(supabase);
 
-// ── Bot Manager — lazy singleton ───────────────────────────────────────────
-let botManagerInstance = null;
-let botManagerPromise = null;
-
-async function getBotManager() {
-    if (botManagerInstance) return botManagerInstance;
-    if (botManagerPromise) return botManagerPromise;
-
-    botManagerPromise = (async () => {
-        const bm = new BotManager(supabase, encryptionService, config);
-        await bm.initialize();
-        botManagerInstance = bm;
-        return bm;
-    })();
-
-    return botManagerPromise;
-}
+// ── Bot Manager — eager init at module load ────────────────────────────────
+// Bot is constructed synchronously so mainBot is ready before any request.
+// loadBusinessBots() runs async in the background (fire-and-forget).
+const botManager = new BotManager(supabase, encryptionService, config);
+app.locals.botManager = botManager;
+botManager.initialize().catch(err =>
+    console.error('[BotManager] async init error:', err.message)
+);
 
 // ── Middleware ─────────────────────────────────────────────────────────────
 app.use(helmet(securityConfig.helmet));
 app.use(cors(securityConfig.cors));
 app.set('trust proxy', 1);
 
-// Telegram webhooks need raw body
-app.use('/webhook/telegram', (req, res, next) => {
-    express.raw({ type: 'application/json' })(req, res, () => {
-        if (req.body && Buffer.isBuffer(req.body)) {
-            try { req.body = JSON.parse(req.body.toString()); } catch {}
-        }
-        next();
-    });
-});
-
+// JSON body parsing — works for both regular requests and Telegram webhooks.
+// Vercel @vercel/node already parses bodies; this is a no-op there but works locally.
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Inject context + lazy botManager into every request
-app.use(async (req, res, next) => {
+// Inject service context into every request
+app.use((req, res, next) => {
     req.context = { supabase, encryptionService, auditService, rateLimiter, config };
-    try {
-        if (!req.app.locals.botManager) {
-            req.app.locals.botManager = await getBotManager();
-        }
-    } catch (e) {
-        console.error('BotManager init error:', e.message);
-    }
     next();
 });
 
@@ -90,26 +66,19 @@ if (require.main === module) {
     const PORT = config.PORT || 3000;
     const IS_PRODUCTION = config.NODE_ENV === 'production';
 
-    getBotManager().then(async (bm) => {
-        app.locals.botManager = bm;
+    app.listen(PORT, async () => {
+        console.log(`🪞 MiniMe on port ${PORT} | env: ${config.NODE_ENV}`);
 
         if (IS_PRODUCTION && config.WEB_URL && config.WEB_URL.startsWith('https://')) {
             await registerWebhooks(config);
         } else {
-            await bm.launchPolling();
+            await botManager.launchPolling();
             console.log('🔄 Polling mode');
         }
-
-        app.listen(PORT, () => {
-            console.log(`🪞 MiniMe on port ${PORT} | env: ${config.NODE_ENV}`);
-        });
-
-        process.on('SIGTERM', async () => { await bm.shutdown(); process.exit(0); });
-        process.on('SIGINT', async () => { await bm.shutdown(); process.exit(0); });
-    }).catch(err => {
-        console.error('Failed to start:', err);
-        process.exit(1);
     });
+
+    process.on('SIGTERM', async () => { await botManager.shutdown(); process.exit(0); });
+    process.on('SIGINT', async () => { await botManager.shutdown(); process.exit(0); });
 }
 
 async function registerWebhooks(cfg) {

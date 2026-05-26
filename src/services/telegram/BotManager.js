@@ -10,22 +10,23 @@ class BotManager {
         this.encryption = encryptionService;
         this.config = config;
         this.bots = new Map();   // businessId -> { bot, token, username }
-        this.mainBot = null;
-        this.searchBot = null;
         this.ai = new OpenAIService(config.OPENAI_API_KEY);
-    }
 
-    // ── Initialization ─────────────────────────────────────────────────────────
-
-    async initialize() {
-        this.mainBot = new Telegraf(this.config.TELEGRAM_BOT_TOKEN);
+        // Create bots synchronously so they're ready immediately for webhook calls.
+        // Critical on Vercel: prevents race condition where a request hits before init.
+        this.mainBot = new Telegraf(config.TELEGRAM_BOT_TOKEN);
         this.setupMainBotHandlers(this.mainBot);
 
-        if (this.config.SEARCH_BOT_TOKEN) {
-            this.searchBot = new Telegraf(this.config.SEARCH_BOT_TOKEN);
+        if (config.SEARCH_BOT_TOKEN) {
+            this.searchBot = new Telegraf(config.SEARCH_BOT_TOKEN);
             this.setupSearchBotHandlers(this.searchBot);
+        } else {
+            this.searchBot = null;
         }
+    }
 
+    // ── Initialization (async — loads business bots from DB) ─────────────────
+    async initialize() {
         await this.loadBusinessBots();
         console.log(`🤖 BotManager ready — ${this.bots.size} business bots loaded`);
     }

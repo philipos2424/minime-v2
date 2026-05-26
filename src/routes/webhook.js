@@ -2,28 +2,52 @@ const express = require('express');
 const router = express.Router();
 
 // ── Telegram webhooks ──────────────────────────────────────────────────────
-// Main bot webhook
-router.post('/telegram/main', (req, res, next) => {
-    const { botManager } = req.app.locals;
-    if (!botManager?.mainBot) return res.status(404).json({ error: 'Bot not initialized' });
-    return botManager.getMainWebhookMiddleware('/webhook/telegram/main')(req, res, next);
+// Use bot.handleUpdate() directly to bypass Telegraf's internal path check
+// (which fails when routes are mounted on a sub-path because req.url is stripped)
+
+router.post('/telegram/main', async (req, res) => {
+    const botManager = req.app.locals.botManager;
+    if (!botManager?.mainBot) {
+        console.warn('[webhook/telegram/main] botManager.mainBot not ready');
+        return res.status(503).json({ error: 'Bot not ready' });
+    }
+    try {
+        await botManager.mainBot.handleUpdate(req.body);
+        res.status(200).json({ ok: true });
+    } catch (e) {
+        console.error('[webhook/telegram/main] error:', e.message, e.stack?.slice(0, 200));
+        res.status(200).json({ ok: true }); // Always 200 so Telegram doesn't retry
+    }
 });
 
-// Search bot webhook
-router.post('/telegram/search', (req, res, next) => {
-    const { botManager } = req.app.locals;
-    const mw = botManager?.getSearchWebhookMiddleware('/webhook/telegram/search');
-    if (!mw) return res.status(404).json({ error: 'Search bot not configured' });
-    return mw(req, res, next);
+router.post('/telegram/search', async (req, res) => {
+    const botManager = req.app.locals.botManager;
+    if (!botManager?.searchBot) {
+        return res.status(503).json({ error: 'Search bot not configured' });
+    }
+    try {
+        await botManager.searchBot.handleUpdate(req.body);
+        res.status(200).json({ ok: true });
+    } catch (e) {
+        console.error('[webhook/telegram/search] error:', e.message);
+        res.status(200).json({ ok: true });
+    }
 });
 
-// Business bot webhooks (by businessId)
-router.post('/telegram/business/:businessId', (req, res, next) => {
-    const { botManager } = req.app.locals;
+router.post('/telegram/business/:businessId', async (req, res) => {
+    const botManager = req.app.locals.botManager;
     const { businessId } = req.params;
-    const mw = botManager?.getBusinessWebhookMiddleware(businessId, `/webhook/telegram/business/${businessId}`);
-    if (!mw) return res.status(404).json({ error: 'Business bot not found' });
-    return mw(req, res, next);
+    const bizBot = botManager?.bots?.get(businessId);
+    if (!bizBot?.bot) {
+        return res.status(503).json({ error: 'Business bot not found' });
+    }
+    try {
+        await bizBot.bot.handleUpdate(req.body);
+        res.status(200).json({ ok: true });
+    } catch (e) {
+        console.error(`[webhook/telegram/business/${businessId}] error:`, e.message);
+        res.status(200).json({ ok: true });
+    }
 });
 
 // ── Chapa payment webhook ──────────────────────────────────────────────────
