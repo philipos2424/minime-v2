@@ -194,27 +194,54 @@ class BotManager {
         return true;
     }
 
-    async finishSignup(ctx, category) {
+    async pickBotMode(ctx, category) {
         const userId = ctx.from.id;
         const session = this.signupSessions.get(userId);
-        if (!session) {
-            return ctx.reply('Session expired. Send /start to restart.');
-        }
+        if (!session) return ctx.reply('Session expired. Send /start to restart.');
+        session.data.category = category;
+        session.step = 'bot_mode';
+        this.signupSessions.set(userId, session);
 
-        // Create the business row
+        return ctx.reply(
+            `Last step — *how should customers reach you?*\n\n` +
+            `*Option 1: Use MiniMe directly* (recommended for now)\n` +
+            `Customers tap your unique link → chat with @MiniMeAgentBot which replies as ${session.data.business_name}. Zero setup, you can switch to your own bot anytime.\n\n` +
+            `*Option 2: Connect your own bot*\n` +
+            `Create a bot via @BotFather, paste the token in Settings. Customers chat with @YourShopBot directly.`,
+            {
+                parse_mode: 'Markdown',
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: '⚡ Use MiniMe directly (recommended)', callback_data: 'signup_mode_shared' }],
+                        [{ text: '🤖 I have my own bot', callback_data: 'signup_mode_custom' }]
+                    ]
+                }
+            }
+        );
+    }
+
+    async finishSignup(ctx, mode) {
+        const userId = ctx.from.id;
+        const session = this.signupSessions.get(userId);
+        if (!session) return ctx.reply('Session expired. Send /start to restart.');
+
+        // Generate a shop code for shared-mode users
+        const shopCode = Math.random().toString(36).slice(2, 10);
+
         const { data: business, error } = await this.supabase.from('businesses').insert({
             owner_telegram_id: userId,
             owner_telegram_username: ctx.from.username || null,
             owner_name: session.data.owner_name || ctx.from.first_name || null,
             business_name: session.data.business_name,
-            category,
+            category: session.data.category,
             assistant_name: 'MiniMe',
             tone: 'warm',
             language_preference: 'mixed',
             secretary_chat_id: ctx.chat.id,
             status: 'active',
-            modes: ['secretary'],
-            primary_mode: 'secretary',
+            modes: mode === 'shared' ? ['secretary'] : ['bot'],
+            primary_mode: mode === 'shared' ? 'secretary' : 'bot',
+            shop_code: mode === 'shared' ? shopCode : null,
             rules: {
                 shadow_mode: true,
                 auto_reply: false,
@@ -230,28 +257,39 @@ class BotManager {
             return ctx.reply(`❌ Setup failed: ${error.message}\n\nTry /start again.`);
         }
 
-        return ctx.reply(
+        const sharedLink = `https://t.me/MiniMeAgentBot?start=shop_${shopCode}`;
+
+        const successText = mode === 'shared' ? (
             `✅ *${business.business_name} is live!*\n\n` +
-            `Your AI assistant *MiniMe* is ready. Here's what to do next:\n\n` +
-            `1️⃣ Send a product photo with the price in the caption\n` +
-            `2️⃣ Use \`/teach We deliver to Bole free over 5000 ETB\`\n` +
-            `3️⃣ Use \`/rule Always mention warranty\` for behavior rules\n` +
-            `4️⃣ Use \`/name Selam\` to give your assistant a custom name\n\n` +
-            `When customers message your bot/account, I'll draft replies and send them to you for approval (shadow mode is ON by default).\n\n` +
-            `Try sending me a product photo now! 📸`,
-            {
-                parse_mode: 'Markdown',
-                reply_markup: {
-                    inline_keyboard: [
-                        [{ text: '📱 Open Dashboard', web_app: { url: this.config.WEB_URL } }],
-                        [
-                            { text: '🎓 Teach me something', callback_data: 'show_teach' },
-                            { text: '⚙️ Status', callback_data: 'show_status' }
-                        ]
-                    ]
-                }
-            }
+            `Share this link with customers — when they tap it, I'll reply as your business:\n\n` +
+            `🔗 ${sharedLink}\n\n` +
+            `*What to do next:*\n` +
+            `1️⃣ Send a product photo with price in caption\n` +
+            `2️⃣ \`/teach We deliver to Bole free over 5000 ETB\`\n` +
+            `3️⃣ \`/rule Always mention warranty\`\n` +
+            `4️⃣ \`/name Selam\` — give your assistant a name\n\n` +
+            `Shadow mode is ON — every reply comes to you for approval first.`
+        ) : (
+            `✅ *${business.business_name} is set up!*\n\n` +
+            `Next: connect your bot. Go to @BotFather → /newbot → get a token → open the dashboard → Settings → Telegram bot → paste token.\n\n` +
+            `Meanwhile, start teaching me:\n` +
+            `1️⃣ Send product photos\n` +
+            `2️⃣ \`/teach\` your knowledge\n` +
+            `3️⃣ \`/rule\` your behaviors`
         );
+
+        return ctx.reply(successText, {
+            parse_mode: 'Markdown',
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: '📱 Open Dashboard', web_app: { url: this.config.WEB_URL } }],
+                    [
+                        { text: '🎓 Teach something', callback_data: 'show_teach' },
+                        { text: '⚙️ Status', callback_data: 'show_status' }
+                    ]
+                ]
+            }
+        });
     }
 
     // legacy path — kept for old callback compatibility
@@ -1057,10 +1095,15 @@ TONE: friendly, like a smart business mentor talking to an Ethiopian shopkeeper.
         // Rule delete
         if (data.startsWith('rule_del_')) return this.handleRuleDelete(ctx, parseInt(data.replace('rule_del_', ''), 10));
 
-        // Signup category selection
+        // Signup: category picked → ask about bot mode
         if (data.startsWith('signup_cat_')) {
+            await ctx.answerCbQuery();
+            return this.pickBotMode(ctx, data.replace('signup_cat_', ''));
+        }
+        // Signup: bot mode picked → finalize
+        if (data.startsWith('signup_mode_')) {
             await ctx.answerCbQuery('Setting up...');
-            return this.finishSignup(ctx, data.replace('signup_cat_', ''));
+            return this.finishSignup(ctx, data.replace('signup_mode_', ''));
         }
 
         await ctx.answerCbQuery();

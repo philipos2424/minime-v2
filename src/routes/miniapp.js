@@ -1,75 +1,126 @@
 const express = require('express');
 const router = express.Router();
-const { createClient } = require('@supabase/supabase-js');
+const crypto = require('crypto');
 
-// Auth middleware for Mini App
-const verifyTelegramAuth = (req, res, next) => {
-    const { initData } = req.body;
+// ── Verify Telegram WebApp initData ────────────────────────────────────────
+function verifyInitData(initData, botToken) {
+    try {
+        const params = new URLSearchParams(initData);
+        const hash = params.get('hash');
+        if (!hash) return null;
+        params.delete('hash');
+        const dataCheckString = [...params.entries()]
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([k, v]) => `${k}=${v}`)
+            .join('\n');
+        const secret = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
+        const calc = crypto.createHmac('sha256', secret).update(dataCheckString).digest('hex');
+        if (calc !== hash) return null;
+        const userParam = params.get('user');
+        return userParam ? JSON.parse(userParam) : null;
+    } catch { return null; }
+}
 
-    if (!initData) {
-        return res.status(401).json({ error: 'Missing init data' });
+const auth = (req, res, next) => {
+    const { initData, userId } = req.body;
+    if (!initData && !userId) return res.status(401).json({ error: 'Missing auth' });
+    if (initData) {
+        const tgUser = verifyInitData(initData, req.context.config.TELEGRAM_BOT_TOKEN);
+        if (tgUser) {
+            req.tgUser = tgUser;
+            req.userId = tgUser.id;
+            return next();
+        }
     }
-
-    // Verify Telegram WebApp init data
-    // Implementation depends on Telegram's validation method
-    // For now, basic check
+    // Fallback for testing: trust userId in body
+    req.userId = Number(userId);
     next();
 };
 
-// Get dashboard data
-router.post('/dashboard', verifyTelegramAuth, async (req, res) => {
-    const { userId } = req.body;
+async function getBusiness(supabase, userId) {
+    const { data } = await supabase
+        .from('businesses')
+        .select('*')
+        .eq('owner_telegram_id', userId)
+        .single();
+    return data;
+}
+
+// ── /miniapp/auth — issue a simple session token ──────────────────────────
+router.post('/auth', auth, async (req, res) => {
+    const business = await getBusiness(req.context.supabase, req.userId);
+    res.json({
+        token: 'tg-' + req.userId,
+        user: req.tgUser,
+        business: business || null
+    });
+});
+
+// ── /miniapp/dashboard ─────────────────────────────────────────────────────
+router.post('/dashboard', auth, async (req, res) => {
     const { supabase } = req.context;
-
     try {
-        // Get business
-        const { data: business } = await supabase
-            .from('businesses')
-            .select('*')
-            .eq('owner_telegram_id', userId)
-            .single();
+        const business = await getBusiness(supabase, req.userId);
+        if (!business) return res.status(404).json({ error: 'Business not found. Send /start to @MiniMeAgentBot first.' });
 
-        if (!business) {
-            return res.status(404).json({ error: 'Business not found' });
-        }
+        const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+        const todayISO = todayStart.toISOString();
 
-        // Get today's stats
-        const today = new Date().toISOString().split('T')[0];
-        const { data: todayStats } = await supabase
-            .from('analytics_daily')
-            .select('*')
-            .eq('business_id', business.id)
-            .eq('date', today)
-            .single();
+        // Real data from v1 schema: customers + messages
+        const [
+            { count: totalCustomers },
+            { count: todayMessageCount },
+            { count: pendingCount },
+            { data: recentConversations },
+            { count: totalProducts }
+        ] = await Promise.all([
+            supabase.from('customers').select('id', { count: 'exact', head: true }).eq('business_id', business.id),
+            supabase.from('messages').select('id', { count: 'exact', head: true }).eq('business_id', business.id).gte('created_at', todayISO),
+            supabase.from('pending_replies').select('id', { count: 'exact', head: true }).eq('business_id', business.id).eq('status', 'pending'),
+            // Get recent conversations joined with customer + latest message
+            supabase
+                .from('conversations')
+                .select('id, last_message_at, message_count, requires_owner, customers(name, telegram_id, total_orders, last_active_at)')
+                .eq('business_id', business.id)
+                .order('last_message_at', { ascending: false })
+                .limit(10),
+            supabase.from('products').select('id', { count: 'exact', head: true }).eq('business_id', business.id)
+        ]);
 
-        // Get unread messages
-        const { count: unreadCount } = await supabase
-            .from('conversations')
-            .select('*', { count: 'exact', head: true })
-            .eq('business_id', business.id)
-            .eq('read_by_owner', false);
+        // For each recent convo, get the latest message preview
+        const enrichedConvos = await Promise.all((recentConversations || []).map(async (c) => {
+            const { data: lastMsg } = await supabase
+                .from('messages')
+                .select('content, direction, created_at, is_ai_generated')
+                .eq('conversation_id', c.id)
+                .order('created_at', { ascending: false })
+                .limit(1)
+                .maybeSingle();
+            return {
+                id: c.id,
+                customer_name: c.customers?.name || 'Customer',
+                customer_telegram_id: c.customers?.telegram_id,
+                customer_message: lastMsg?.content || '',
+                bot_reply: null,
+                mode_used: lastMsg?.is_ai_generated ? 'bot' : 'owner_reply',
+                read_by_owner: !c.requires_owner,
+                created_at: c.last_message_at,
+                confidence: null
+            };
+        }));
 
-        // Get pending replies
-        const { count: pendingCount } = await supabase
-            .from('pending_replies')
-            .select('*', { count: 'exact', head: true })
-            .eq('business_id', business.id)
-            .eq('status', 'pending');
-
-        // Get recent conversations
-        const { data: recentConversations } = await supabase
-            .from('conversations')
-            .select('*')
-            .eq('business_id', business.id)
-            .order('created_at', { ascending: false })
-            .limit(10);
+        const unreadCount = enrichedConvos.filter(c => !c.read_by_owner).length;
 
         res.json({
             business,
-            stats: todayStats || {},
-            unreadCount: unreadCount || 0,
+            stats: {
+                total_conversations: todayMessageCount || 0,
+                total_customers: totalCustomers || 0,
+                total_products: totalProducts || 0
+            },
+            unreadCount,
             pendingCount: pendingCount || 0,
-            recentConversations: recentConversations || []
+            recentConversations: enrichedConvos
         });
     } catch (error) {
         console.error('Dashboard error:', error);
@@ -77,193 +128,215 @@ router.post('/dashboard', verifyTelegramAuth, async (req, res) => {
     }
 });
 
-// Get inbox
-router.post('/inbox', verifyTelegramAuth, async (req, res) => {
-    const { userId, filter = 'all', page = 1, limit = 20 } = req.body;
+// ── /miniapp/inbox ─────────────────────────────────────────────────────────
+router.post('/inbox', auth, async (req, res) => {
     const { supabase } = req.context;
-
     try {
-        const { data: business } = await supabase
-            .from('businesses')
-            .select('id')
-            .eq('owner_telegram_id', userId)
-            .single();
-
+        const business = await getBusiness(supabase, req.userId);
         if (!business) return res.status(404).json({ error: 'Business not found' });
 
-        let query = supabase
+        const { data: convos } = await supabase
             .from('conversations')
-            .select('*')
-            .eq('business_id', business.id);
+            .select('id, last_message_at, requires_owner, message_count, customers(id, name, telegram_id, last_active_at, total_orders)')
+            .eq('business_id', business.id)
+            .order('last_message_at', { ascending: false, nullsFirst: false })
+            .limit(50);
 
-        if (filter === 'unread') {
-            query = query.eq('read_by_owner', false);
-        } else if (filter === 'pending') {
-            query = query.eq('resolved', false);
-        }
+        // Fetch the latest message for each
+        const conversations = await Promise.all((convos || []).map(async (c) => {
+            const { data: lastMsg } = await supabase
+                .from('messages')
+                .select('content, direction, is_ai_generated, created_at')
+                .eq('conversation_id', c.id)
+                .order('created_at', { ascending: false })
+                .limit(1)
+                .maybeSingle();
+            return {
+                id: c.id,
+                customer_id: c.customers?.id,
+                customer_name: c.customers?.name || 'Customer',
+                customer_telegram_id: c.customers?.telegram_id,
+                customer_message: lastMsg?.content || '',
+                mode_used: lastMsg?.is_ai_generated ? 'bot' : 'owner_reply',
+                read_by_owner: !c.requires_owner,
+                created_at: c.last_message_at,
+                message_count: c.message_count
+            };
+        }));
 
-        const { data, error, count } = await query
-            .order('created_at', { ascending: false })
-            .range((page - 1) * limit, page * limit - 1);
-
-        res.json({ conversations: data || [], total: count || 0 });
+        res.json({ conversations });
     } catch (error) {
+        console.error('Inbox error:', error);
         res.status(500).json({ error: 'Failed to load inbox' });
     }
 });
 
-// Get products
-router.post('/products', verifyTelegramAuth, async (req, res) => {
-    const { userId, status = 'active', page = 1, limit = 20 } = req.body;
+// ── /miniapp/customers ─────────────────────────────────────────────────────
+router.post('/customers', auth, async (req, res) => {
     const { supabase } = req.context;
-
     try {
-        const { data: business } = await supabase
-            .from('businesses')
-            .select('id')
-            .eq('owner_telegram_id', userId)
-            .single();
-
+        const business = await getBusiness(supabase, req.userId);
         if (!business) return res.status(404).json({ error: 'Business not found' });
 
-        const { data, count } = await supabase
-            .from('business_content')
-            .select('*', { count: 'exact' })
+        const { data: customers } = await supabase
+            .from('customers')
+            .select('id, name, telegram_id, total_orders, total_spent, last_active_at, created_at, phone, mood, tier')
             .eq('business_id', business.id)
-            .eq('status', status)
-            .order('created_at', { ascending: false })
-            .range((page - 1) * limit, page * limit - 1);
+            .order('last_active_at', { ascending: false, nullsFirst: false })
+            .limit(100);
 
-        res.json({ products: data || [], total: count || 0 });
+        res.json({ customers: customers || [] });
     } catch (error) {
+        console.error('Customers error:', error);
+        res.status(500).json({ error: 'Failed to load customers' });
+    }
+});
+
+// ── /miniapp/products ──────────────────────────────────────────────────────
+router.post('/products', auth, async (req, res) => {
+    const { supabase } = req.context;
+    try {
+        const business = await getBusiness(supabase, req.userId);
+        if (!business) return res.status(404).json({ error: 'Business not found' });
+
+        // Try v1 schema (products) first, fall back to v2 schema (business_content)
+        const { data: v1Products } = await supabase
+            .from('products')
+            .select('*')
+            .eq('business_id', business.id)
+            .eq('is_active', true)
+            .order('created_at', { ascending: false })
+            .limit(100);
+
+        if (v1Products?.length) {
+            return res.json({
+                products: v1Products.map(p => ({
+                    id: p.id,
+                    name: p.name,
+                    description: p.description,
+                    price: p.price,
+                    currency: p.currency || 'ETB',
+                    category: p.category,
+                    tags: p.tags || [],
+                    stock_quantity: p.stock_quantity,
+                    in_stock: p.stock_quantity == null || p.stock_quantity > 0,
+                    image_url: p.image_url,
+                    status: 'active'
+                }))
+            });
+        }
+
+        // v2 fallback
+        const { data: v2Products } = await supabase
+            .from('business_content')
+            .select('*')
+            .eq('business_id', business.id)
+            .eq('extracted_type', 'product')
+            .eq('status', 'active')
+            .order('created_at', { ascending: false })
+            .limit(100);
+
+        res.json({ products: v2Products || [] });
+    } catch (error) {
+        console.error('Products error:', error);
         res.status(500).json({ error: 'Failed to load products' });
     }
 });
 
-// Update product
-router.post('/products/update', verifyTelegramAuth, async (req, res) => {
-    const { userId, productId, updates } = req.body;
-    const { supabase, auditService } = req.context;
-
+// ── /miniapp/analytics ─────────────────────────────────────────────────────
+router.post('/analytics', auth, async (req, res) => {
+    const { supabase } = req.context;
+    const { period = '7d' } = req.body;
     try {
-        const { data: business } = await supabase
-            .from('businesses')
-            .select('id')
-            .eq('owner_telegram_id', userId)
-            .single();
-
+        const business = await getBusiness(supabase, req.userId);
         if (!business) return res.status(404).json({ error: 'Business not found' });
 
-        // Verify product belongs to business
-        const { data: product } = await supabase
-            .from('business_content')
-            .select('*')
-            .eq('id', productId)
+        const days = period === '30d' ? 30 : period === '90d' ? 90 : 7;
+        const since = new Date(Date.now() - days * 86400000);
+
+        const [
+            { count: totalMessages },
+            { count: aiReplies },
+            { count: ownerReplies },
+            { count: totalCustomers },
+            { count: newCustomers },
+            { count: ordersCount }
+        ] = await Promise.all([
+            supabase.from('messages').select('id', { count: 'exact', head: true }).eq('business_id', business.id).gte('created_at', since.toISOString()),
+            supabase.from('messages').select('id', { count: 'exact', head: true }).eq('business_id', business.id).gte('created_at', since.toISOString()).eq('is_ai_generated', true),
+            supabase.from('messages').select('id', { count: 'exact', head: true }).eq('business_id', business.id).gte('created_at', since.toISOString()).eq('direction', 'outbound').eq('is_ai_generated', false),
+            supabase.from('customers').select('id', { count: 'exact', head: true }).eq('business_id', business.id),
+            supabase.from('customers').select('id', { count: 'exact', head: true }).eq('business_id', business.id).gte('created_at', since.toISOString()),
+            supabase.from('orders').select('id', { count: 'exact', head: true }).eq('business_id', business.id).gte('created_at', since.toISOString())
+        ]);
+
+        // Daily breakdown
+        const { data: dailyMsgs } = await supabase
+            .from('messages')
+            .select('created_at, is_ai_generated')
             .eq('business_id', business.id)
-            .single();
+            .gte('created_at', since.toISOString())
+            .limit(2000);
 
-        if (!product) return res.status(403).json({ error: 'Not authorized' });
-
-        const { data: updated } = await supabase
-            .from('business_content')
-            .update({
-                ...updates,
-                price_updated_at: updates.price ? new Date().toISOString() : undefined
-            })
-            .eq('id', productId)
-            .select()
-            .single();
-
-        await auditService.log({
-            tableName: 'business_content',
-            recordId: productId,
-            action: 'UPDATE',
-            oldData: product,
-            newData: updated,
-            actorTelegramId: userId
+        const dailyMap = {};
+        (dailyMsgs || []).forEach(m => {
+            const day = m.created_at.split('T')[0];
+            if (!dailyMap[day]) dailyMap[day] = { date: day, total_conversations: 0, auto_replies: 0, leads_generated: 0 };
+            dailyMap[day].total_conversations++;
+            if (m.is_ai_generated) dailyMap[day].auto_replies++;
         });
 
-        res.json({ success: true, product: updated });
+        const daily = [];
+        for (let i = days - 1; i >= 0; i--) {
+            const d = new Date(Date.now() - i * 86400000).toISOString().split('T')[0];
+            daily.push(dailyMap[d] || { date: d, total_conversations: 0, auto_replies: 0, leads_generated: 0 });
+        }
+
+        res.json({
+            daily,
+            totals: {
+                conversations: totalMessages || 0,
+                autoReplies: aiReplies || 0,
+                ownerReplies: ownerReplies || 0,
+                customers: totalCustomers || 0,
+                newCustomers: newCustomers || 0,
+                orders: ordersCount || 0,
+                leads: newCustomers || 0,
+                fees: 0
+            }
+        });
     } catch (error) {
-        res.status(500).json({ error: 'Failed to update product' });
+        console.error('Analytics error:', error);
+        res.status(500).json({ error: 'Failed to load analytics', daily: [], totals: {} });
     }
 });
 
-// Get analytics
-router.post('/analytics', verifyTelegramAuth, async (req, res) => {
-    const { userId, period = '7d' } = req.body;
+// ── /miniapp/settings — update persona ─────────────────────────────────────
+router.post('/settings', auth, async (req, res) => {
     const { supabase } = req.context;
-
+    const { assistant_name, tone, language_preference, shadow_mode } = req.body;
     try {
-        const { data: business } = await supabase
-            .from('businesses')
-            .select('id')
-            .eq('owner_telegram_id', userId)
-            .single();
-
+        const business = await getBusiness(supabase, req.userId);
         if (!business) return res.status(404).json({ error: 'Business not found' });
 
-        const days = parseInt(period) || 7;
-        const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+        const updates = {};
+        if (assistant_name) updates.assistant_name = assistant_name.slice(0, 30);
+        if (tone) updates.tone = tone;
+        if (language_preference) updates.language_preference = language_preference;
+        if (typeof shadow_mode === 'boolean') {
+            updates.rules = { ...(business.rules || {}), shadow_mode };
+        }
 
         const { data } = await supabase
-            .from('analytics_daily')
-            .select('*')
-            .eq('business_id', business.id)
-            .gte('date', startDate)
-            .order('date', { ascending: true });
-
-        // Calculate totals
-        const totals = (data || []).reduce((acc, day) => ({
-            conversations: (acc.conversations || 0) + (day.total_conversations || 0),
-            autoReplies: (acc.autoReplies || 0) + (day.auto_replies || 0),
-            leads: (acc.leads || 0) + (day.leads_generated || 0),
-            fees: (acc.fees || 0) + (day.fees_earned || 0)
-        }), {});
-
-        res.json({ daily: data || [], totals });
-    } catch (error) {
-        res.status(500).json({ error: 'Failed to load analytics' });
-    }
-});
-
-// Update settings
-router.post('/settings', verifyTelegramAuth, async (req, res) => {
-    const { userId, settings } = req.body;
-    const { supabase, auditService } = req.context;
-
-    try {
-        const { data: business } = await supabase
             .from('businesses')
-            .select('*')
-            .eq('owner_telegram_id', userId)
-            .single();
-
-        if (!business) return res.status(404).json({ error: 'Business not found' });
-
-        const { data: updated } = await supabase
-            .from('businesses')
-            .update({
-                rules: { ...business.rules, ...settings },
-                primary_mode: settings.primaryMode || business.primary_mode,
-                fallback_to_bot: settings.fallbackToBot !== undefined ? settings.fallbackToBot : business.fallback_to_bot,
-                fallback_after_minutes: settings.fallbackAfterMinutes || business.fallback_after_minutes
-            })
+            .update(updates)
             .eq('id', business.id)
             .select()
             .single();
 
-        await auditService.log({
-            tableName: 'businesses',
-            recordId: business.id,
-            action: 'UPDATE',
-            oldData: business,
-            newData: updated,
-            actorTelegramId: userId
-        });
-
-        res.json({ success: true, settings: updated.rules });
+        res.json({ business: data });
     } catch (error) {
+        console.error('Settings update error:', error);
         res.status(500).json({ error: 'Failed to update settings' });
     }
 });

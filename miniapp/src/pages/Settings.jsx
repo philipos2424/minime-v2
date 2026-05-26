@@ -219,10 +219,36 @@ function Settings() {
         </div>
       ))}
 
+      {/* Logout */}
+      <button
+        onClick={() => {
+          try { localStorage.removeItem('minime_token') } catch {}
+          try { window.Telegram?.WebApp?.close?.() } catch {}
+          // If close didn't work, reload
+          setTimeout(() => window.location.reload(), 200)
+        }}
+        style={{
+          width: '100%',
+          background: '#fff',
+          border: `1px solid ${COLORS.line}`,
+          color: COLORS.error || '#B85450',
+          padding: '14px',
+          borderRadius: 16,
+          fontSize: 14,
+          fontWeight: 500,
+          fontFamily: BODY,
+          cursor: 'pointer',
+          marginTop: 8,
+          marginBottom: 16
+        }}
+      >
+        Log out
+      </button>
+
       {/* Footer */}
       <div style={{
         textAlign: 'center',
-        marginTop: 32,
+        marginTop: 16,
         marginBottom: 8,
         fontSize: 11,
         color: COLORS.muted,
