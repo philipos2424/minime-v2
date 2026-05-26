@@ -1,253 +1,235 @@
-import React, { useState, useEffect } from 'react'
-import { Bell, Moon, Globe, Shield, Zap, Clock } from 'lucide-react'
-import '../styles/Settings.css'
+import React, { useEffect, useState } from 'react'
+import {
+  Building2, User, GraduationCap, MessageCircle, Shield, Sparkles,
+  Bot, BookOpen, Coins, AlarmClock, Sun, Moon, Bell,
+  Users, CreditCard, ChevronRight, Brain
+} from 'lucide-react'
 
-function Settings() {
-  const [settings, setSettings] = useState({
-    primaryMode: 'secretary',
-    fallbackToBot: true,
-    fallbackAfterMinutes: 30,
-    autoReply: false,
-    shadowMode: true,
-    notifyOnSale: true,
-    allowReferrals: true,
-    languages: ['en', 'am'],
-    businessHours: {
-      mon: '9-18',
-      tue: '9-18',
-      wed: '9-18',
-      thu: '9-18',
-      fri: '9-18',
-      sat: '9-14',
-      sun: 'closed'
-    }
-  })
-  const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
+const COLORS = {
+  ink: '#0E2823', inkSoft: '#4A5E5A', muted: '#8A9590',
+  line: '#E4DED1', lineSoft: '#EEE9DE',
+  cream: '#F4EEE1', cream2: '#EDE6D6', paper: '#FBF8F1',
+  gold: '#B08A4A', goldSoft: '#D4B987', mint: '#4FA38A'
+}
+const SERIF = "'Georgia', 'Newsreader', serif"
+const BODY = "'Geist', 'Inter', system-ui, sans-serif"
 
-  useEffect(() => {
-    fetchSettings()
-  }, [])
-
-  const fetchSettings = async () => {
-    try {
-      const token = localStorage.getItem('minime_token')
-      const response = await fetch('/miniapp/dashboard', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Telegram ${token}`
-        },
-        body: JSON.stringify({ 
-          userId: window.Telegram?.WebApp?.initDataUnsafe?.user?.id
-        })
-      })
-
-      const data = await response.json()
-      if (data.business?.rules) {
-        setSettings({
-          primaryMode: data.business.primary_mode,
-          fallbackToBot: data.business.fallback_to_bot,
-          fallbackAfterMinutes: data.business.fallback_after_minutes,
-          ...data.business.rules
-        })
-      }
-    } catch (error) {
-      console.error('Settings fetch error:', error)
-    } finally {
-      setLoading(false)
-    }
+const GROUPS = [
+  {
+    title: 'Your Business',
+    items: [
+      { id: 'profile', Icon: Building2, label: 'Business Profile', sub: 'Name, category, address, links' },
+      { id: 'card', Icon: User, label: 'Business Card', sub: 'Share your info with customers' }
+    ]
+  },
+  {
+    title: 'Brain',
+    items: [
+      { id: 'persona', Icon: Brain, label: 'Assistant Persona', sub: 'Name, tone, language' },
+      { id: 'teach', Icon: GraduationCap, label: 'Teach MiniMe', sub: 'Voice samples · knowledge · rules' },
+      { id: 'faq', Icon: MessageCircle, label: 'FAQ Replies', sub: 'Exact answers to common questions', badge: '💡' },
+      { id: 'trust', Icon: Shield, label: 'Trust & Autonomy', sub: 'Shadow mode — drafts only' },
+      { id: 'advisor', Icon: Sparkles, label: 'Advisor & Rules', sub: 'Business advice + behavior rules' }
+    ]
+  },
+  {
+    title: 'Channels',
+    items: [
+      { id: 'bot', Icon: Bot, label: 'Telegram bot', sub: 'Your bot token & username' },
+      { id: 'commands', Icon: BookOpen, label: 'Bot commands guide', sub: 'How to use your bot', badge: '📖' },
+      { id: 'payments', Icon: Coins, label: 'Payments', sub: 'Chapa, Telebirr, Stars' }
+    ]
+  },
+  {
+    title: 'Rhythm',
+    items: [
+      { id: 'reminders', Icon: AlarmClock, label: 'Reminders', sub: 'Schedule Telegram alerts' },
+      { id: 'notifications', Icon: Sun, label: 'Morning digest', sub: 'Daily recap in Telegram' },
+      { id: 'hours', Icon: Moon, label: 'Availability', sub: '24/7 or set quiet hours' },
+      { id: 'voice', Icon: Bell, label: 'Voice & style', sub: 'Sample replies + tone' }
+    ]
+  },
+  {
+    title: 'Account',
+    items: [
+      { id: 'staff', Icon: Users, label: 'Staff access', sub: 'Add team members' },
+      { id: 'billing', Icon: CreditCard, label: 'Billing', sub: 'Subscription and plan' }
+    ]
   }
+]
 
-  const saveSettings = async () => {
-    setSaving(true)
-    try {
-      const token = localStorage.getItem('minime_token')
-      await fetch('/miniapp/settings', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Telegram ${token}`
-        },
-        body: JSON.stringify({ 
-          userId: window.Telegram?.WebApp?.initDataUnsafe?.user?.id,
-          settings: {
-            primaryMode: settings.primaryMode,
-            fallbackToBot: settings.fallbackToBot,
-            fallbackAfterMinutes: settings.fallbackAfterMinutes,
-            autoReply: settings.autoReply,
-            shadowMode: settings.shadowMode,
-            notifyOnSale: settings.notifyOnSale,
-            allowReferrals: settings.allowReferrals,
-            languages: settings.languages,
-            businessHours: settings.businessHours
-          }
-        })
-      })
-
-      // Show success
-      window.Telegram?.WebApp?.showPopup?.({
-        title: 'Saved',
-        message: 'Your settings have been updated'
-      })
-    } catch (error) {
-      console.error('Save error:', error)
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  if (loading) {
-    return (
-      <div className="page-loading">
-        <div className="spinner"></div>
-      </div>
-    )
-  }
-
+function NavRow({ Icon, label, sub, badge, last, dotMint }) {
   return (
-    <div className="settings">
-      <h1 className="page-title">Settings</h1>
-
-      {/* Mode Settings */}
-      <div className="settings-section">
-        <h2><Zap size={18} /> Mode</h2>
-
-        <div className="setting-item">
-          <div className="setting-info">
-            <span className="setting-label">Primary Mode</span>
-            <span className="setting-desc">How you want to handle customer messages</span>
-          </div>
-          <select 
-            value={settings.primaryMode}
-            onChange={(e) => setSettings({ ...settings, primaryMode: e.target.value })}
-          >
-            <option value="secretary">👤 Secretary (Reply as You)</option>
-            <option value="bot">🤖 Bot (Dedicated Bot)</option>
-          </select>
+    <div style={{
+      display: 'flex',
+      alignItems: 'center',
+      gap: 14,
+      padding: '13px 14px',
+      cursor: 'pointer',
+      borderBottom: last ? 'none' : `1px solid ${COLORS.lineSoft}`
+    }}>
+      <div style={{
+        width: 34, height: 34, borderRadius: 10,
+        background: COLORS.cream,
+        display: 'grid', placeItems: 'center', flexShrink: 0
+      }}>
+        <Icon size={17} color={COLORS.ink} strokeWidth={1.6} />
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{
+          fontSize: 14.5,
+          color: COLORS.ink,
+          fontWeight: 500,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6
+        }}>
+          {label}
+          {dotMint && (
+            <span style={{
+              width: 6, height: 6, borderRadius: '50%',
+              background: COLORS.mint, display: 'inline-block'
+            }} />
+          )}
         </div>
-
-        <div className="setting-item">
-          <div className="setting-info">
-            <span className="setting-label">Fallback to Bot</span>
-            <span className="setting-desc">Auto-switch to bot when you're offline</span>
-          </div>
-          <label className="toggle">
-            <input 
-              type="checkbox"
-              checked={settings.fallbackToBot}
-              onChange={(e) => setSettings({ ...settings, fallbackToBot: e.target.checked })}
-            />
-            <span className="toggle-slider"></span>
-          </label>
-        </div>
-
-        {settings.fallbackToBot && (
-          <div className="setting-item">
-            <div className="setting-info">
-              <span className="setting-label">Fallback After</span>
-              <span className="setting-desc">Minutes of inactivity before bot takes over</span>
-            </div>
-            <select
-              value={settings.fallbackAfterMinutes}
-              onChange={(e) => setSettings({ ...settings, fallbackAfterMinutes: parseInt(e.target.value) })}
-            >
-              <option value={15}>15 minutes</option>
-              <option value={30}>30 minutes</option>
-              <option value={60}>1 hour</option>
-              <option value={120}>2 hours</option>
-              <option value={1440}>24 hours</option>
-            </select>
+        {sub && (
+          <div style={{ fontSize: 12, color: COLORS.muted, marginTop: 2, lineHeight: 1.4 }}>
+            {sub}
           </div>
         )}
       </div>
+      {badge && (
+        <span style={{
+          fontSize: 11,
+          color: COLORS.gold,
+          background: 'rgba(176,138,74,0.1)',
+          padding: '2px 8px',
+          borderRadius: 999,
+          fontWeight: 500
+        }}>
+          {badge}
+        </span>
+      )}
+      <ChevronRight size={18} color={COLORS.muted} strokeWidth={1.5} />
+    </div>
+  )
+}
 
-      {/* AI Settings */}
-      <div className="settings-section">
-        <h2><Shield size={18} /> AI Behavior</h2>
+function Settings() {
+  const [business, setBusiness] = useState(null)
 
-        <div className="setting-item">
-          <div className="setting-info">
-            <span className="setting-label">Shadow Mode</span>
-            <span className="setting-desc">AI suggests replies, you approve before sending</span>
-          </div>
-          <label className="toggle">
-            <input 
-              type="checkbox"
-              checked={settings.shadowMode}
-              onChange={(e) => setSettings({ ...settings, shadowMode: e.target.checked })}
-            />
-            <span className="toggle-slider"></span>
-          </label>
+  useEffect(() => {
+    const tg = window.Telegram?.WebApp
+    if (!tg?.initData) return
+    fetch('/miniapp/dashboard', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        initData: tg.initData,
+        userId: tg.initDataUnsafe?.user?.id
+      })
+    })
+      .then(r => r.json())
+      .then(data => { if (data.business) setBusiness(data.business) })
+      .catch(() => {})
+  }, [])
+
+  const ownerFirst = (business?.owner_name || '').split(' ')[0]
+  const plan = business?.subscription_plan || 'Free'
+
+  return (
+    <div style={{ fontFamily: BODY, color: COLORS.ink, paddingBottom: 20 }}>
+      {/* Header */}
+      <div style={{ marginBottom: 18 }}>
+        <div style={{
+          fontSize: 10, fontWeight: 600, letterSpacing: '0.18em',
+          textTransform: 'uppercase', color: COLORS.gold, marginBottom: 6
+        }}>
+          Account
         </div>
-
-        <div className="setting-item">
-          <div className="setting-info">
-            <span className="setting-label">Auto-Reply</span>
-            <span className="setting-desc">AI replies immediately without approval</span>
-          </div>
-          <label className="toggle">
-            <input 
-              type="checkbox"
-              checked={settings.autoReply}
-              onChange={(e) => setSettings({ ...settings, autoReply: e.target.checked })}
-            />
-            <span className="toggle-slider"></span>
-          </label>
-        </div>
+        <h1 style={{
+          fontFamily: SERIF,
+          fontSize: 28,
+          fontWeight: 400,
+          letterSpacing: '-0.015em',
+          color: COLORS.ink,
+          margin: 0
+        }}>
+          Settings
+        </h1>
       </div>
 
-      {/* Notifications */}
-      <div className="settings-section">
-        <h2><Bell size={18} /> Notifications</h2>
-
-        <div className="setting-item">
-          <div className="setting-info">
-            <span className="setting-label">Notify on Sale</span>
-            <span className="setting-desc">Get notified when a reservation is made</span>
-          </div>
-          <label className="toggle">
-            <input 
-              type="checkbox"
-              checked={settings.notifyOnSale}
-              onChange={(e) => setSettings({ ...settings, notifyOnSale: e.target.checked })}
-            />
-            <span className="toggle-slider"></span>
-          </label>
+      {/* Profile card */}
+      <div style={{
+        border: `1px solid ${COLORS.line}`,
+        borderRadius: 16,
+        background: COLORS.cream,
+        padding: 16,
+        marginBottom: 22,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 14
+      }}>
+        <div style={{
+          width: 56, height: 56, borderRadius: '50%',
+          background: '#E8D3A6',
+          display: 'grid', placeItems: 'center', flexShrink: 0,
+          fontFamily: SERIF, fontSize: 22, color: '#5C4520'
+        }}>
+          {(ownerFirst || business?.business_name || '?').charAt(0).toUpperCase()}
         </div>
-      </div>
-
-      {/* Business Hours */}
-      <div className="settings-section">
-        <h2><Clock size={18} /> Business Hours</h2>
-
-        {Object.entries(settings.businessHours || {}).map(([day, hours]) => (
-          <div key={day} className="setting-item">
-            <div className="setting-info">
-              <span className="setting-label">{day.charAt(0).toUpperCase() + day.slice(1)}</span>
-            </div>
-            <input 
-              type="text"
-              value={hours}
-              onChange={(e) => {
-                const newHours = { ...settings.businessHours, [day]: e.target.value }
-                setSettings({ ...settings, businessHours: newHours })
-              }}
-              className="hours-input"
-              placeholder="9-18 or closed"
-            />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontFamily: SERIF, fontSize: 18, color: COLORS.ink }}>
+            {business?.owner_name || business?.business_name || 'Your business'}
           </div>
-        ))}
+          <div style={{ fontSize: 12, color: COLORS.muted, marginTop: 3 }}>
+            {business?.business_name || '—'} · {plan} plan
+          </div>
+        </div>
+        <ChevronRight size={18} color={COLORS.muted} strokeWidth={1.5} />
       </div>
 
-      {/* Save Button */}
-      <button 
-        className="save-btn"
-        onClick={saveSettings}
-        disabled={saving}
-      >
-        {saving ? 'Saving...' : 'Save Settings'}
-      </button>
+      {/* Groups */}
+      {GROUPS.map(group => (
+        <div key={group.title} style={{ marginBottom: 22 }}>
+          <div style={{
+            fontSize: 11, fontWeight: 600, letterSpacing: '0.14em',
+            textTransform: 'uppercase', color: COLORS.muted, marginBottom: 8
+          }}>
+            {group.title}
+          </div>
+          <div style={{
+            background: '#fff',
+            border: `1px solid ${COLORS.lineSoft}`,
+            borderRadius: 16,
+            overflow: 'hidden'
+          }}>
+            {group.items.map((item, i) => (
+              <NavRow
+                key={item.id}
+                Icon={item.Icon}
+                label={item.label}
+                sub={item.sub}
+                badge={item.badge}
+                last={i === group.items.length - 1}
+                dotMint={item.id === 'bot' && (business?.bot_username || business?.shop_code)}
+              />
+            ))}
+          </div>
+        </div>
+      ))}
+
+      {/* Footer */}
+      <div style={{
+        textAlign: 'center',
+        marginTop: 32,
+        marginBottom: 8,
+        fontSize: 11,
+        color: COLORS.muted,
+        letterSpacing: '0.06em'
+      }}>
+        MiniMe v2 · made for Ethiopian businesses
+      </div>
     </div>
   )
 }
