@@ -16,8 +16,7 @@
     { "src": "/api(.*)", "dest": "server.js" },
     { "src": "/miniapp(.*)", "dest": "server.js" },
     { "src": "/webhook(.*)", "dest": "server.js" },
-    { "src": "/(.*\\.(js|css|ico|png|svg|woff2?))", "dest": "/public/$1" },
-    { "src": "/(.*)", "dest": "server.js" }
+    { "src": "/(.*)", "dest": "/public/index.html" }
   ],
   "env": {
     "NODE_ENV": "production",
