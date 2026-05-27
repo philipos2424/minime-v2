@@ -3,18 +3,20 @@
   "builds": [
     {
       "src": "server.js",
-      "use": "@vercel/node",
-      "config": {
-        "includeFiles": ["public/**", "public/assets/**"]
-      }
+      "use": "@vercel/node"
+    },
+    {
+      "src": "public/**",
+      "use": "@vercel/static"
     }
   ],
   "routes": [
-    { "src": "/assets/(.*)", "dest": "server.js" },
+    { "src": "/assets/(.*)", "dest": "/public/assets/$1" },
     { "src": "/health(.*)", "dest": "server.js" },
     { "src": "/api(.*)", "dest": "server.js" },
     { "src": "/miniapp(.*)", "dest": "server.js" },
     { "src": "/webhook(.*)", "dest": "server.js" },
+    { "src": "/(.*\\.(js|css|ico|png|svg|woff2?))", "dest": "/public/$1" },
     { "src": "/(.*)", "dest": "server.js" }
   ],
   "env": {

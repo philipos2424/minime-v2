@@ -55,9 +55,8 @@ app.use((req, res, next) => {
     next();
 });
 
-// ── Serve React Mini App (static files) ────────────────────────────────────
-const publicDir = path.join(__dirname, 'public');
-app.use(express.static(publicDir));
+// Static files served by Vercel directly — see vercel.json routes
+// Express only handles API routes
 
 // ── API Routes ─────────────────────────────────────────────────────────────
 app.use('/miniapp', miniappRoutes);
@@ -65,11 +64,8 @@ app.use('/webhook', webhookRoutes);
 app.use('/health', healthRoutes);
 app.use('/api', apiRoutes);
 
-// SPA fallback — serve index.html for all non-API routes (React Router handles them)
-app.get('*', (req, res) => {
-    res.sendFile(path.join(publicDir, 'index.html'));
-});
-
+// SPA fallback — Vercel serves index.html directly from /public for non-API routes
+// This is only reached for API routes that fall through
 app.use(errorMiddleware);
 
 // ── Local dev: start with polling ──────────────────────────────────────────
