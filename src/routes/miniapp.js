@@ -171,6 +171,56 @@ router.post('/inbox', auth, async (req, res) => {
     }
 });
 
+// ── /miniapp/conversation — full message thread ───────────────────────────
+router.post('/conversation', auth, async (req, res) => {
+    const { supabase } = req.context;
+    const { conversationId } = req.body;
+    try {
+        const business = await getBusiness(supabase, req.userId);
+        if (!business) return res.status(404).json({ error: 'Business not found' });
+        if (!conversationId) return res.status(400).json({ error: 'conversationId required' });
+
+        const [{ data: conv }, { data: messages }] = await Promise.all([
+            supabase
+                .from('conversations')
+                .select('id, last_message_at, requires_owner, message_count, customers(id, name, telegram_id, total_orders, total_spent, last_active_at)')
+                .eq('id', conversationId)
+                .eq('business_id', business.id)
+                .single(),
+            supabase
+                .from('messages')
+                .select('id, direction, content, is_ai_generated, ai_confidence, owner_edited, created_at, telegram_message_id')
+                .eq('conversation_id', conversationId)
+                .order('created_at', { ascending: true })
+                .limit(200)
+        ]);
+
+        if (!conv) return res.status(404).json({ error: 'Conversation not found' });
+
+        // Mark as read
+        await supabase
+            .from('conversations')
+            .update({ requires_owner: false })
+            .eq('id', conversationId)
+            .eq('business_id', business.id);
+
+        res.json({
+            conversation: {
+                id: conv.id,
+                customer_name: conv.customers?.name || 'Customer',
+                customer_telegram_id: conv.customers?.telegram_id,
+                total_orders: conv.customers?.total_orders || 0,
+                total_spent: conv.customers?.total_spent || 0,
+                message_count: conv.message_count
+            },
+            messages: messages || []
+        });
+    } catch (error) {
+        console.error('Conversation error:', error);
+        res.status(500).json({ error: 'Failed to load conversation' });
+    }
+});
+
 // ── /miniapp/customers ─────────────────────────────────────────────────────
 router.post('/customers', auth, async (req, res) => {
     const { supabase } = req.context;

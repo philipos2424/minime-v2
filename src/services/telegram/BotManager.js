@@ -73,6 +73,7 @@ class BotManager {
         bot.command('rules', ctx => this.cmdListRules(ctx));
         bot.command('shadow', ctx => this.cmdToggleShadow(ctx));
         bot.command('connectbot', ctx => this.cmdConnectBot(ctx));
+        bot.command('master', ctx => this.cmdMaster(ctx));
         bot.command('advisor', ctx => this.cmdAdvisor(ctx));
         bot.on(message('photo'), ctx => this.handleOwnerMedia(ctx));
         bot.on(message('document'), ctx => this.handleOwnerMedia(ctx));
@@ -450,6 +451,75 @@ class BotManager {
         return this.promptForBotToken(ctx, business);
     }
 
+    // ── Master Admin Panel ─────────────────────────────────────────────────────
+    async cmdMaster(ctx) {
+        const adminId = this.config.PLATFORM_ADMIN_TELEGRAM_ID;
+        if (!adminId || String(ctx.from.id) !== String(adminId)) {
+            return ctx.reply('🔒 This command is for platform admins only.');
+        }
+
+        await ctx.reply('🔧 Loading admin panel...');
+
+        try {
+            const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+            const weekAgo = new Date(Date.now() - 7 * 86400000);
+
+            const [
+                { count: totalBusinesses },
+                { count: activeBusinesses },
+                { count: newBusinessesWeek },
+                { count: totalCustomers },
+                { count: messagesToday },
+                { count: pendingDrafts },
+                { count: totalProducts },
+                { data: recentBusinesses }
+            ] = await Promise.all([
+                this.supabase.from('businesses').select('id', { count: 'exact', head: true }),
+                this.supabase.from('businesses').select('id', { count: 'exact', head: true }).eq('status', 'active'),
+                this.supabase.from('businesses').select('id', { count: 'exact', head: true }).gte('created_at', weekAgo.toISOString()),
+                this.supabase.from('customers').select('id', { count: 'exact', head: true }),
+                this.supabase.from('messages').select('id', { count: 'exact', head: true }).gte('created_at', todayStart.toISOString()),
+                this.supabase.from('pending_replies').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
+                this.supabase.from('products').select('id', { count: 'exact', head: true }),
+                this.supabase.from('businesses').select('business_name, owner_name, owner_telegram_id, category, primary_mode, bot_username, created_at').order('created_at', { ascending: false }).limit(10)
+            ]);
+
+            const businessList = (recentBusinesses || []).map(b => {
+                const mode = b.bot_username ? `@${b.bot_username}` : (b.primary_mode === 'secretary' ? 'shared' : '—');
+                const age = Math.floor((Date.now() - new Date(b.created_at).getTime()) / 86400000);
+                return `• *${b.business_name}* — ${b.category || 'uncategorised'} · ${mode} · ${age}d ago`;
+            }).join('\n');
+
+            const text =
+                `🔧 *MiniMe Admin Panel*\n\n` +
+                `*Platform stats:*\n` +
+                `🏢 Businesses: ${totalBusinesses || 0} (${activeBusinesses || 0} active)\n` +
+                `📈 New this week: ${newBusinessesWeek || 0}\n` +
+                `👥 Total customers: ${totalCustomers || 0}\n` +
+                `💬 Messages today: ${messagesToday || 0}\n` +
+                `⏳ Pending drafts: ${pendingDrafts || 0}\n` +
+                `📦 Products listed: ${totalProducts || 0}\n\n` +
+                `*Recent businesses:*\n${businessList || '_(none)_'}\n\n` +
+                `Commands: /master\\_biz <id> · /master\\_pause <id> · /master\\_logs`;
+
+            return ctx.reply(text, {
+                parse_mode: 'Markdown',
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: '📊 Open Dashboard', web_app: { url: this.config.WEB_URL } }],
+                        [
+                            { text: '🔄 Refresh', callback_data: 'master_refresh' },
+                            { text: '📜 Audit logs', callback_data: 'master_logs' }
+                        ]
+                    ]
+                }
+            });
+        } catch (e) {
+            console.error('[master] error:', e.message);
+            return ctx.reply(`❌ Admin panel error: ${e.message}`);
+        }
+    }
+
     async switchToSharedMode(ctx) {
         const business = await this.getOwnerBusiness(ctx.from.id);
         if (!business) return ctx.reply('Please /start first.');
@@ -820,9 +890,30 @@ class BotManager {
                 await this.supabase.from('pending_replies').update({
                     status: 'approved',
                     owner_action_at: new Date().toISOString(),
-                    owner_action_via: 'telegram'
+                    owner_action_via: 'telegram',
+                    learned_from_this: true
                 }).eq('id', pendingId);
-                await ctx.editMessageText(ctx.callbackQuery.message.text + '\n\n✅ *Approved and sent.*', { parse_mode: 'Markdown' });
+
+                // LEARN from approved drafts too — owner liked it as-is,
+                // so save the Q&A pair as a sample_reply (lower priority than edits).
+                if (pending.original_message && pending.suggested_reply && pending.suggested_reply.length > 10) {
+                    const existing = Array.isArray(business.sample_replies) ? business.sample_replies : [];
+                    // Avoid duplicates
+                    const isDupe = existing.some(s =>
+                        (s.answer || s.content || '').trim() === pending.suggested_reply.trim()
+                    );
+                    if (!isDupe) {
+                        const updated = [{
+                            source: 'owner_approved',
+                            question: pending.original_message.slice(0, 300),
+                            answer: pending.suggested_reply,
+                            created_at: new Date().toISOString()
+                        }, ...existing].slice(0, 30);
+                        await this.supabase.from('businesses').update({ sample_replies: updated }).eq('id', business.id);
+                    }
+                }
+
+                await ctx.editMessageText(ctx.callbackQuery.message.text + '\n\n✅ *Approved and sent.* (learned)', { parse_mode: 'Markdown' });
             } catch (e) {
                 await ctx.answerCbQuery('Send failed: ' + e.message);
                 return;
@@ -1311,6 +1402,23 @@ TONE: friendly, like a smart business mentor talking to an Ethiopian shopkeeper.
         if (data === 'switch_to_shared') {
             await ctx.answerCbQuery('Switching...');
             return this.switchToSharedMode(ctx);
+        }
+        // Master admin actions
+        if (data === 'master_refresh') {
+            await ctx.answerCbQuery('Refreshing...');
+            return this.cmdMaster(ctx);
+        }
+        if (data === 'master_logs') {
+            await ctx.answerCbQuery();
+            const adminId = this.config.PLATFORM_ADMIN_TELEGRAM_ID;
+            if (String(ctx.from.id) !== String(adminId)) return;
+            const { data: logs } = await this.supabase
+                .from('audit_logs')
+                .select('action, table_name, severity, created_at')
+                .order('created_at', { ascending: false })
+                .limit(20);
+            const text = (logs || []).map(l => `• ${l.created_at.slice(11, 16)} · ${l.action} on ${l.table_name}${l.severity !== 'info' ? ` [${l.severity}]` : ''}`).join('\n') || '_(no logs yet)_';
+            return ctx.reply(`📜 *Recent audit logs:*\n\n${text}`, { parse_mode: 'Markdown' });
         }
 
         await ctx.answerCbQuery();
