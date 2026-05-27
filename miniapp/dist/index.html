@@ -26,6 +26,29 @@
 </head>
 <body>
   <div id="root"></div>
+  <div id="debug" style="padding:16px;font-family:monospace;font-size:12px;color:#333;background:#fff8;position:fixed;bottom:0;left:0;right:0;max-height:40vh;overflow:auto;display:none;z-index:9999"></div>
+  <script>
+    function dbg(msg) {
+      var d = document.getElementById('debug');
+      d.style.display = 'block';
+      d.innerHTML += '<div>' + msg + '</div>';
+    }
+    window.onerror = function(msg, src, line, col, err) {
+      dbg('ERROR: ' + msg + ' (' + src + ':' + line + ')');
+    };
+    window.onunhandledrejection = function(e) {
+      dbg('PROMISE: ' + (e.reason && e.reason.message || e.reason || 'unknown'));
+    };
+    // Check if React mounted after 3 seconds
+    setTimeout(function() {
+      var root = document.getElementById('root');
+      if (!root || root.children.length === 0) {
+        dbg('ROOT EMPTY after 3s — React did not mount');
+        dbg('TG: ' + (window.Telegram ? 'SDK loaded' : 'SDK missing'));
+        dbg('URL: ' + window.location.href);
+      }
+    }, 3000);
+  </script>
   <script nomodule>!function(){var e=document,t=e.createElement("script");if(!("noModule"in t)&&"onbeforeload"in t){var n=!1;e.addEventListener("beforeload",(function(e){if(e.target===t)n=!0;else if(!e.target.hasAttribute("nomodule")||!n)return;e.preventDefault()}),!0),t.type="module",t.src=".",e.head.appendChild(t),t.remove()}}();</script>
   <script nomodule crossorigin id="vite-legacy-polyfill" src="/assets/polyfills-legacy-B6Refm8r.js"></script>
   <script nomodule crossorigin id="vite-legacy-entry" data-src="/assets/index-legacy-BjuDhT0Z.js">System.import(document.getElementById('vite-legacy-entry').getAttribute('data-src'))</script>
