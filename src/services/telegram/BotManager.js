@@ -72,6 +72,7 @@ class BotManager {
         bot.command('rule', ctx => this.cmdAddRule(ctx));
         bot.command('rules', ctx => this.cmdListRules(ctx));
         bot.command('shadow', ctx => this.cmdToggleShadow(ctx));
+        bot.command('connectbot', ctx => this.cmdConnectBot(ctx));
         bot.command('advisor', ctx => this.cmdAdvisor(ctx));
         bot.on(message('photo'), ctx => this.handleOwnerMedia(ctx));
         bot.on(message('document'), ctx => this.handleOwnerMedia(ctx));
@@ -259,7 +260,12 @@ class BotManager {
 
         const sharedLink = `https://t.me/MiniMeAgentBot?start=shop_${shopCode}`;
 
-        const successText = mode === 'shared' ? (
+        // Shared mode → done now. Custom mode → continue to token paste.
+        if (mode === 'custom') {
+            return this.promptForBotToken(ctx, business);
+        }
+
+        const successText =
             `✅ *${business.business_name} is live!*\n\n` +
             `Share this link with customers — when they tap it, I'll reply as your business:\n\n` +
             `🔗 ${sharedLink}\n\n` +
@@ -268,15 +274,7 @@ class BotManager {
             `2️⃣ \`/teach We deliver to Bole free over 5000 ETB\`\n` +
             `3️⃣ \`/rule Always mention warranty\`\n` +
             `4️⃣ \`/name Selam\` — give your assistant a name\n\n` +
-            `Shadow mode is ON — every reply comes to you for approval first.`
-        ) : (
-            `✅ *${business.business_name} is set up!*\n\n` +
-            `Next: connect your bot. Go to @BotFather → /newbot → get a token → open the dashboard → Settings → Telegram bot → paste token.\n\n` +
-            `Meanwhile, start teaching me:\n` +
-            `1️⃣ Send product photos\n` +
-            `2️⃣ \`/teach\` your knowledge\n` +
-            `3️⃣ \`/rule\` your behaviors`
-        );
+            `Shadow mode is ON — every reply comes to you for approval first.`;
 
         return ctx.reply(successText, {
             parse_mode: 'Markdown',
@@ -290,6 +288,188 @@ class BotManager {
                 ]
             }
         });
+    }
+
+    // ── Custom Bot Connect — BotFather deep-link + token paste ────────────────
+    async promptForBotToken(ctx, business) {
+        // Mark this user as awaiting a token
+        this.signupSessions.set(ctx.from.id, {
+            step: 'awaiting_token',
+            businessId: business.id,
+            data: { business_name: business.business_name }
+        });
+
+        return ctx.reply(
+            `🤖 *Get your own bot in 60 seconds*\n\n` +
+            `1️⃣ Tap *Open BotFather* below\n` +
+            `2️⃣ Send \`/newbot\` to BotFather\n` +
+            `3️⃣ Pick a display name (e.g. *${business.business_name}*)\n` +
+            `4️⃣ Pick a username — must end in \`bot\` (e.g. \`${(business.business_name || 'shop').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 12)}_bot\`)\n` +
+            `5️⃣ Copy the token BotFather sends — looks like \`123456789:AAH...\`\n` +
+            `6️⃣ Send the token back to me — that's it!\n\n` +
+            `_I'll set everything up automatically — webhook, commands, the works._`,
+            {
+                parse_mode: 'Markdown',
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: '📱 Open BotFather', url: 'https://t.me/BotFather' }],
+                        [{ text: '⚡ Use MiniMe directly instead', callback_data: 'switch_to_shared' }]
+                    ]
+                }
+            }
+        );
+    }
+
+    async handleBotTokenPaste(ctx, business, token) {
+        const userId = ctx.from.id;
+
+        // 1. Format check
+        if (!/^\d+:[A-Za-z0-9_-]{30,}$/.test(token)) {
+            return ctx.reply(
+                `That doesn't look like a bot token. It should be a long string like:\n\n` +
+                `\`123456789:AAH-1234abcdEFG_xxxxxxxxxxxxxxxx\`\n\n` +
+                `Try copying it again from BotFather and pasting the whole thing.`,
+                { parse_mode: 'Markdown' }
+            );
+        }
+
+        const placeholder = await ctx.reply('⏳ Validating your bot…');
+
+        try {
+            // 2. Validate with Telegram
+            const meResp = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+            const meJson = await meResp.json();
+            if (!meJson.ok) {
+                await ctx.telegram.editMessageText(
+                    ctx.chat.id, placeholder.message_id, null,
+                    `❌ That token isn't valid: _${meJson.description || 'unknown error'}_\n\n` +
+                    `Double-check you copied the whole token from BotFather and try again.`,
+                    { parse_mode: 'Markdown' }
+                );
+                return;
+            }
+
+            const botUsername = meJson.result.username;
+            const botId = meJson.result.id;
+
+            // 3. Encrypt and store the token
+            const encrypted = this.encryption.encrypt(token);
+            await this.supabase.from('encrypted_secrets').upsert({
+                entity_type: 'business',
+                entity_id: business.id,
+                secret_type: 'bot_token',
+                encrypted_value: encrypted.encrypted,
+                iv: encrypted.iv,
+                auth_tag: encrypted.authTag,
+                version: 1,
+                created_at: new Date().toISOString()
+            }, { onConflict: 'entity_type,entity_id,secret_type' });
+
+            // 4. Update business
+            const modes = Array.isArray(business.modes) ? business.modes : [];
+            if (!modes.includes('bot')) modes.push('bot');
+            await this.supabase.from('businesses').update({
+                bot_username: botUsername,
+                primary_mode: 'bot',
+                modes
+            }).eq('id', business.id);
+
+            // 5. Set webhook on the new bot
+            const webhookUrl = `${this.config.WEB_URL.replace(/\/$/, '')}/webhook/telegram/business/${business.id}`;
+            const whResp = await fetch(`https://api.telegram.org/bot${token}/setWebhook`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    url: webhookUrl,
+                    allowed_updates: ['message', 'edited_message', 'callback_query', 'pre_checkout_query'],
+                    drop_pending_updates: true
+                })
+            });
+            const whJson = await whResp.json();
+            if (!whJson.ok) {
+                console.warn('[token connect] setWebhook failed:', whJson.description);
+            }
+
+            // 6. Set default commands on the new bot
+            await fetch(`https://api.telegram.org/bot${token}/setMyCommands`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    commands: [
+                        { command: 'start', description: 'Start a conversation' },
+                        { command: 'products', description: 'Browse products' },
+                        { command: 'help', description: 'Get help' },
+                        { command: 'human', description: 'Talk to a human' }
+                    ]
+                })
+            }).catch(() => {});
+
+            // 7. Register in-memory so customer messages route to CustomerHandler
+            await this.addBusinessBot(business.id, token, botUsername);
+
+            // 8. Clear signup state
+            this.signupSessions.delete(userId);
+
+            // 9. Success message
+            await ctx.telegram.editMessageText(
+                ctx.chat.id, placeholder.message_id, null,
+                `✅ *@${botUsername} is LIVE!*\n\n` +
+                `🔗 https://t.me/${botUsername}\n\n` +
+                `Share this link with customers — they'll message your bot, and I'll reply as *${business.assistant_name || 'MiniMe'}*.\n\n` +
+                `Shadow mode is ON: every reply comes to you for approval first.`,
+                {
+                    parse_mode: 'Markdown',
+                    reply_markup: {
+                        inline_keyboard: [
+                            [{ text: '📱 Open Dashboard', web_app: { url: this.config.WEB_URL } }],
+                            [{ text: `📸 Test it — open @${botUsername}`, url: `https://t.me/${botUsername}` }]
+                        ]
+                    }
+                }
+            );
+        } catch (e) {
+            console.error('[token connect] error:', e.message);
+            await ctx.telegram.editMessageText(
+                ctx.chat.id, placeholder.message_id, null,
+                `❌ Something went wrong: _${e.message}_\n\nTry again, or use \`/connectbot\` to retry.`,
+                { parse_mode: 'Markdown' }
+            );
+        }
+    }
+
+    async cmdConnectBot(ctx) {
+        const business = await this.getOwnerBusiness(ctx.from.id);
+        if (!business) return ctx.reply('Please /start first.');
+        if (business.bot_username) {
+            return ctx.reply(
+                `You already have a bot connected: *@${business.bot_username}*\n\n` +
+                `Send a new token to replace it, or run /status to see your setup.`,
+                { parse_mode: 'Markdown' }
+            );
+        }
+        return this.promptForBotToken(ctx, business);
+    }
+
+    async switchToSharedMode(ctx) {
+        const business = await this.getOwnerBusiness(ctx.from.id);
+        if (!business) return ctx.reply('Please /start first.');
+        // Generate shop_code if missing
+        let shopCode = business.shop_code;
+        if (!shopCode) {
+            shopCode = Math.random().toString(36).slice(2, 10);
+            await this.supabase.from('businesses').update({
+                shop_code: shopCode,
+                primary_mode: 'secretary'
+            }).eq('id', business.id);
+        }
+        this.signupSessions.delete(ctx.from.id);
+        return ctx.reply(
+            `✅ Switched to MiniMe direct mode!\n\n` +
+            `Share this link with customers:\n` +
+            `🔗 https://t.me/MiniMeAgentBot?start=shop_${shopCode}\n\n` +
+            `You can still connect your own bot later with /connectbot.`,
+            { parse_mode: 'Markdown' }
+        );
     }
 
     // legacy path — kept for old callback compatibility
@@ -689,17 +869,39 @@ class BotManager {
     // ── Text & Media ───────────────────────────────────────────────────────────
 
     async handleMainBotText(ctx) {
-        // First: are they in the middle of signup?
-        if (this.signupSessions.has(ctx.from.id)) {
+        const text = ctx.message.text || '';
+        const userId = ctx.from.id;
+
+        // Token detection (works during signup OR for existing owners pasting a token)
+        const tokenMatch = text.trim().match(/^(\d+:[A-Za-z0-9_-]{30,})$/);
+        if (tokenMatch) {
+            const business = await this.getOwnerBusiness(userId);
+            if (business) {
+                return this.handleBotTokenPaste(ctx, business, tokenMatch[1]);
+            }
+            // If they're in awaiting_token signup state, business should already exist;
+            // if not, fall through to signup handling
+        }
+
+        // Signup in progress?
+        if (this.signupSessions.has(userId)) {
+            const session = this.signupSessions.get(userId);
+            // If awaiting token but they sent something else
+            if (session.step === 'awaiting_token') {
+                return ctx.reply(
+                    `Send me the token from BotFather — it looks like:\n\n` +
+                    `\`123456789:AAH-1234abcdEFG_xxxxxxxxxxxxxxxx\`\n\n` +
+                    `Tap *Open BotFather* above if you haven't gotten one yet, or tap *Use MiniMe directly* to skip.`,
+                    { parse_mode: 'Markdown' }
+                );
+            }
             return this.handleSignupText(ctx);
         }
 
-        const business = await this.getOwnerBusiness(ctx.from.id);
+        const business = await this.getOwnerBusiness(userId);
         if (!business) {
             return ctx.reply('👋 Send /start to set up your business.');
         }
-
-        const text = ctx.message.text;
 
         // Owner replying to a bot suggestion (draft edit)
         if (ctx.message.reply_to_message?.from?.is_bot) {
@@ -1104,6 +1306,11 @@ TONE: friendly, like a smart business mentor talking to an Ethiopian shopkeeper.
         if (data.startsWith('signup_mode_')) {
             await ctx.answerCbQuery('Setting up...');
             return this.finishSignup(ctx, data.replace('signup_mode_', ''));
+        }
+        // Switch from custom bot mode to shared mode (during/after signup)
+        if (data === 'switch_to_shared') {
+            await ctx.answerCbQuery('Switching...');
+            return this.switchToSharedMode(ctx);
         }
 
         await ctx.answerCbQuery();
