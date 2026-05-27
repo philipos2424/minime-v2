@@ -1,6 +1,6 @@
 import React from 'react'
 import { Link, useLocation } from 'react-router-dom'
-import { LayoutDashboard, Inbox, Package, BarChart3, Settings } from 'lucide-react'
+import { LayoutDashboard, Inbox, Package, Users, Settings } from 'lucide-react'
 import { MiniMeLogo } from './MiniMeLogo'
 
 const COLORS = {
@@ -17,7 +17,7 @@ function Layout({ children, user }) {
     { path: '/', icon: LayoutDashboard, label: 'Home' },
     { path: '/inbox', icon: Inbox, label: 'Inbox' },
     { path: '/products', icon: Package, label: 'Products' },
-    { path: '/analytics', icon: BarChart3, label: 'Stats' },
+    { path: '/customers', icon: Users, label: 'Customers' },
     { path: '/settings', icon: Settings, label: 'Settings' }
   ]
 

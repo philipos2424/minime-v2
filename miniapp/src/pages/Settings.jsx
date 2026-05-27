@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   Building2, User, GraduationCap, MessageCircle, Shield, Sparkles,
   Bot, BookOpen, Coins, AlarmClock, Sun, Moon, Bell,
@@ -18,54 +19,48 @@ const GROUPS = [
   {
     title: 'Your Business',
     items: [
+      { id: 'customers', route: '/customers', Icon: Users, label: 'Customers', sub: 'View your customer list' },
       { id: 'profile', Icon: Building2, label: 'Business Profile', sub: 'Name, category, address, links' },
-      { id: 'card', Icon: User, label: 'Business Card', sub: 'Share your info with customers' }
     ]
   },
   {
     title: 'Brain',
     items: [
-      { id: 'persona', Icon: Brain, label: 'Assistant Persona', sub: 'Name, tone, language' },
-      { id: 'teach', Icon: GraduationCap, label: 'Teach MiniMe', sub: 'Voice samples · knowledge · rules' },
-      { id: 'faq', Icon: MessageCircle, label: 'FAQ Replies', sub: 'Exact answers to common questions', badge: '💡' },
-      { id: 'trust', Icon: Shield, label: 'Trust & Autonomy', sub: 'Shadow mode — drafts only' },
-      { id: 'advisor', Icon: Sparkles, label: 'Advisor & Rules', sub: 'Business advice + behavior rules' }
+      { id: 'persona', route: '/settings/persona', Icon: Brain, label: 'Assistant Persona', sub: 'Name, tone, language, shadow mode' },
+      { id: 'teach', Icon: GraduationCap, label: 'Teach MiniMe', sub: '/teach · /rule · forward messages' },
+      { id: 'advisor', Icon: Sparkles, label: 'Ask Advisor', sub: '/advisor in Telegram', badge: 'Bot' }
     ]
   },
   {
     title: 'Channels',
     items: [
-      { id: 'bot', Icon: Bot, label: 'Telegram bot', sub: 'Your bot token & username' },
-      { id: 'commands', Icon: BookOpen, label: 'Bot commands guide', sub: 'How to use your bot', badge: '📖' },
+      { id: 'bot', Icon: Bot, label: 'Telegram bot', sub: '/connectbot to link your own bot' },
       { id: 'payments', Icon: Coins, label: 'Payments', sub: 'Chapa, Telebirr, Stars' }
     ]
   },
   {
     title: 'Rhythm',
     items: [
-      { id: 'reminders', Icon: AlarmClock, label: 'Reminders', sub: 'Schedule Telegram alerts' },
-      { id: 'notifications', Icon: Sun, label: 'Morning digest', sub: 'Daily recap in Telegram' },
-      { id: 'hours', Icon: Moon, label: 'Availability', sub: '24/7 or set quiet hours' },
-      { id: 'voice', Icon: Bell, label: 'Voice & style', sub: 'Sample replies + tone' }
+      { id: 'hours', Icon: Moon, label: 'Availability', sub: '24/7 or quiet hours via /shadow' },
+      { id: 'voice', Icon: Bell, label: 'Voice & style', sub: 'Forward messages to teach the AI' }
     ]
   },
   {
     title: 'Account',
     items: [
-      { id: 'staff', Icon: Users, label: 'Staff access', sub: 'Add team members' },
       { id: 'billing', Icon: CreditCard, label: 'Billing', sub: 'Subscription and plan' }
     ]
   }
 ]
 
-function NavRow({ Icon, label, sub, badge, last, dotMint }) {
+function NavRow({ Icon, label, sub, badge, last, dotMint, onClick }) {
   return (
-    <div style={{
+    <div onClick={onClick} style={{
       display: 'flex',
       alignItems: 'center',
       gap: 14,
       padding: '13px 14px',
-      cursor: 'pointer',
+      cursor: onClick ? 'pointer' : 'default',
       borderBottom: last ? 'none' : `1px solid ${COLORS.lineSoft}`
     }}>
       <div style={{
@@ -117,6 +112,7 @@ function NavRow({ Icon, label, sub, badge, last, dotMint }) {
 
 function Settings() {
   const [business, setBusiness] = useState(null)
+  const navigate = useNavigate()
 
   useEffect(() => {
     const tg = window.Telegram?.WebApp
@@ -213,6 +209,7 @@ function Settings() {
                 badge={item.badge}
                 last={i === group.items.length - 1}
                 dotMint={item.id === 'bot' && (business?.bot_username || business?.shop_code)}
+                onClick={item.route ? () => navigate(item.route) : undefined}
               />
             ))}
           </div>

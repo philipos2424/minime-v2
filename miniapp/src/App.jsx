@@ -7,6 +7,8 @@ import Inbox from './pages/Inbox'
 import Products from './pages/Products'
 import Analytics from './pages/Analytics'
 import Settings from './pages/Settings'
+import Customers from './pages/Customers'
+import Persona from './pages/Persona'
 import './styles/App.css'
 
 function App() {
@@ -14,7 +16,6 @@ function App() {
   const [splashDone, setSplashDone] = useState(false)
 
   useEffect(() => {
-    // Use window.Telegram.WebApp directly — most reliable approach
     const tg = window.Telegram?.WebApp
     if (tg) {
       try { tg.ready() } catch {}
@@ -48,7 +49,9 @@ function App() {
         <Route path="/inbox" element={<Inbox />} />
         <Route path="/products" element={<Products />} />
         <Route path="/analytics" element={<Analytics />} />
+        <Route path="/customers" element={<Customers />} />
         <Route path="/settings" element={<Settings />} />
+        <Route path="/settings/persona" element={<Persona />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Layout>
